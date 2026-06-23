@@ -23,8 +23,14 @@ import soundfile as sf
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Sensible defaults. Hold some of these out for the test set (see voice-disjoint split).
-DEFAULT_VOICES = ["zh-TW-HsiaoChenNeural", "zh-TW-YunJheNeural", "en-US-GuyNeural"]
+# TRAIN voice pool (edge-tts is the only source now; PrimeTTS dropped — too experimental).
+# zh-TW for accent authenticity + a couple zh-CN and en for speaker variety. The two
+# held-out TEST voices (augment.TEST_VOICES) are deliberately NOT in this list.
+DEFAULT_VOICES = [
+    "zh-TW-HsiaoChenNeural", "zh-TW-YunJheNeural",     # Taiwan F + M
+    "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural",       # Mainland F + M (speaker variety)
+    "en-US-GuyNeural", "en-US-EmmaNeural",             # English M + F (code-switch parts)
+]
 
 
 def load_distinct(requests_path):
@@ -62,6 +68,8 @@ def main():
     ap.add_argument("--assign", choices=["random", "all"], default="random",
                     help="random: 1 voice/text (spread); all: every voice per text")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--out-manifest", default="manifest_edge.jsonl",
+                    help="manifest filename under data/audio/base (augment globs manifest*.jsonl)")
     args = ap.parse_args()
     voices = [v.strip() for v in args.voices.split(",") if v.strip()]
 
@@ -69,7 +77,7 @@ def main():
     if args.limit:
         items = items[:args.limit]
     out_dir = ROOT / "data" / "audio" / "base"; out_dir.mkdir(parents=True, exist_ok=True)
-    man = open(out_dir / "manifest_edge.jsonl", "w", encoding="utf-8")
+    man = open(out_dir / args.out_manifest, "w", encoding="utf-8")
 
     n = 0
     with tempfile.TemporaryDirectory() as td:
@@ -80,12 +88,13 @@ def main():
                 cid = f"e{it['idx']:05d}_{vkey(v)}"
                 mp3 = Path(td) / f"{cid}.mp3"
                 wav = out_dir / f"{cid}.wav"
-                try:
-                    asyncio.run(synth_mp3(it["text"], v, mp3))
-                    mp3_to_wav(mp3, wav)
-                except Exception as e:
-                    print(f"  SKIP {cid}: {type(e).__name__} {e}", file=sys.stderr)
-                    continue
+                if not (wav.exists() and wav.stat().st_size > 0):   # resume: skip done clips
+                    try:
+                        asyncio.run(synth_mp3(it["text"], v, mp3))
+                        mp3_to_wav(mp3, wav)
+                    except Exception as e:
+                        print(f"  SKIP {cid}: {type(e).__name__} {e}", file=sys.stderr)
+                        continue
                 dur = round(sf.info(str(wav)).duration, 2)
                 man.write(json.dumps({"id": cid, "text": it["text"], "wav": str(wav),
                                       "dur": dur, "target": it["target"], "lang": it["lang"],

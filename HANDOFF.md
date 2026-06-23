@@ -18,9 +18,9 @@ CPU).** Free dialog, no wake word; 8 kHz telephony audio.
 - **Training recipe (8 GB VRAM limit):** FREEZE whisper-base encoder AND Llama-1B; train only the
   **projector + a LoRA adapter**. batch 1–2, gradient checkpointing, `sdpa` attention (NO flash-attn
   on Pascal), fp16 for memory (Pascal fp16 is slow — expect ~30–90 min/epoch).
-- **TTS for data:** `Luigi/PrimeTTS` (single young-female zh-TW voice, 8 kHz). Single-voice gap closed
-  by speed/formant + telephony augmentation + the FROZEN pretrained encoder's real-speaker robustness;
-  real-call fine-tune later.
+- **TTS for data:** **edge-tts only** (PrimeTTS dropped — too experimental, unclear sound). Speaker
+  variety from a 6-voice train pool (zh-TW HsiaoChen/YunJhe + zh-CN Xiaoxiao/Yunxi + en Guy/Emma) and
+  2 held-out TEST voices (zh-TW HsiaoYu, en Aria). All degraded to the 8 kHz phone channel by augment.py.
 - **Dialog = hybrid:** Ultravox does PERCEPTION (audio → action object); a deterministic CONTROLLER
   owns POLICY (confirm+transfer / clarify / not-found / operator escape). A 1B does not free-run policy.
 - **Fuzzy search:** controller-side, closed-set, phonetic+string (RapidFuzz + Double-Metaphone +
