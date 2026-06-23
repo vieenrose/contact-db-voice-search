@@ -17,7 +17,7 @@ Out: data/audio/clips/<id>_aN.wav  +  data/audio/train.jsonl / val.jsonl
      each line: {audio, target_text, name, ext, lang, split, augs}
 """
 from __future__ import annotations
-import argparse, audioop, json, random
+import argparse, audioop, hashlib, json, random
 from fractions import Fraction
 from pathlib import Path
 import numpy as np, soundfile as sf
@@ -25,6 +25,18 @@ from scipy.signal import butter, sosfilt, resample_poly
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET_SR = 8000  # the telephony channel — ALL sources (PrimeTTS 8k, edge-tts 24k) normalize here
+
+# Voice-disjoint split: test uses voices NEVER seen in training (measures real
+# cross-speaker generalization). train/val share voices; val holds out ~10% of texts.
+TEST_VOICES = {"zh-TW-HsiaoYuNeural", "en-US-AriaNeural"}
+VAL_TEXT_FRACTION = 0.10
+
+
+def split_for(row: dict) -> str:
+    if row.get("voice") in TEST_VOICES:
+        return "test"
+    h = int(hashlib.md5(row["text"].encode("utf-8")).hexdigest(), 16)
+    return "val" if (h % 100) < int(VAL_TEXT_FRACTION * 100) else "train"
 
 
 def to_i16(x): return np.clip(x * 32767.0, -32768, 32767).astype(np.int16)
@@ -96,10 +108,11 @@ def main():
     for mf in sorted(base_dir.glob("manifest*.jsonl")):
         rows += [json.loads(l) for l in open(mf, encoding="utf-8")]
 
-    out = {"train": open(ROOT / "data" / "audio" / "train.jsonl", "w", encoding="utf-8"),
-           "val": open(ROOT / "data" / "audio" / "val.jsonl", "w", encoding="utf-8")}
-    n = 0
+    out = {s: open(ROOT / "data" / "audio" / f"{s}.jsonl", "w", encoding="utf-8")
+           for s in ("train", "val", "test")}
+    counts = {"train": 0, "val": 0, "test": 0}
     for r in rows:
+        split = split_for(r)                # voice-disjoint: test = held-out voices
         x, sr = sf.read(r["wav"]); x = x.astype(np.float32)
         if x.ndim > 1:                      # stereo -> mono
             x = x.mean(axis=1)
@@ -113,15 +126,17 @@ def main():
             wp = clips_dir / f"{r['id']}_a{j}.wav"
             sf.write(wp, y, sr)
             tgt = r["target"]
-            out[r["split"]].write(json.dumps({
+            out[split].write(json.dumps({
                 "audio": str(wp), "target_text": json.dumps(tgt, ensure_ascii=False),
-                "action": tgt.get("action"), "name": tgt.get("name"), "ext": tgt.get("ext"),
-                "lang": r["lang"], "split": r["split"], "style": r["style"], "augs": augs,
+                "action": tgt.get("action"), "name": tgt.get("name"),
+                "lang": r["lang"], "voice": r.get("voice", "primetts"),
+                "split": split, "style": r["style"], "augs": augs,
             }, ensure_ascii=False) + "\n")
-            n += 1
+            counts[split] += 1
     for f in out.values():
         f.close()
-    print(f"DONE {n} clips from {len(rows)} base texts -> data/audio/{{train,val}}.jsonl")
+    print(f"DONE {sum(counts.values())} clips from {len(rows)} base texts -> "
+          f"data/audio/{{train,val,test}}.jsonl  {counts}")
 
 
 class rng_np:

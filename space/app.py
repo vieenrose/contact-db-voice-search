@@ -14,6 +14,15 @@ from fractions import Fraction
 
 import numpy as np
 import gradio as gr
+
+# Work around a gradio_client schema bug that crashes /api/info:
+# "argument of type 'bool' is not iterable" when a JSON schema value is a bool.
+import gradio_client.utils as _gcu
+_orig_jstp = _gcu._json_schema_to_python_type
+_orig_get_type = _gcu.get_type
+_gcu._json_schema_to_python_type = lambda s, d=None: "Any" if isinstance(s, bool) else _orig_jstp(s, d)
+_gcu.get_type = lambda s: "Any" if not isinstance(s, dict) else _orig_get_type(s)
+
 import torch
 import transformers
 from scipy.signal import resample_poly
@@ -129,4 +138,4 @@ with gr.Blocks(title="Taiwan Office Attendant — Ultravox baseline") as demo:
     btn.click(attend, inputs=inp, outputs=[out_md, out_audio])
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0")
+    demo.launch(server_name="0.0.0.0", ssr_mode=False, show_api=False)

@@ -1,6 +1,7 @@
 fastrtc[tts]
 transformers>=4.47
 accelerate
+peft
 torch
 librosa
 soundfile

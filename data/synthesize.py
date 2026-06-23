@@ -96,8 +96,9 @@ def main():
         sf.write(wp, wav, sr)
         man.write(json.dumps({"id": it["id"], "text": it["text"], "wav": str(wp),
                               "dur": round(len(wav)/sr, 2), "target": it["target"],
-                              "lang": it["lang"], "split": it["split"],
-                              "style": it["style"]}, ensure_ascii=False) + "\n")
+                              "lang": it["lang"], "style": it["style"],
+                              "voice": "primetts", "source": "primetts"},
+                             ensure_ascii=False) + "\n")
         if k % 50 == 0 or args.limit:
             print(f"  [{k+1}/{len(items)}] {it['id']} {len(wav)/sr:.1f}s  {it['text'][:32]}")
     man.close()
