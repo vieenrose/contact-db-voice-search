@@ -18,7 +18,7 @@ UV="$HOME/.local/bin/uv"
 #    data-gen and GPU training on the GTX 1070). Training libs added later.
 "$UV" pip install --python .venv \
   numpy scipy soundfile onnxruntime edge-tts \
-  g2pw g2p_en cn2an torch huggingface_hub rapidfuzz pypinyin
+  g2pw g2p_en cn2an torch huggingface_hub rapidfuzz pypinyin requests
 
 # 4. NLTK data for g2p_en
 .venv/bin/python - <<'PY'
