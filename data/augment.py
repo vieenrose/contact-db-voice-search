@@ -91,7 +91,10 @@ def main():
 
     base_dir = ROOT / "data" / "audio" / "base"
     clips_dir = ROOT / "data" / "audio" / "clips"; clips_dir.mkdir(parents=True, exist_ok=True)
-    rows = [json.loads(l) for l in open(base_dir / "manifest.jsonl", encoding="utf-8")]
+    # consume every source's manifest (PrimeTTS manifest.jsonl + edge manifest_edge.jsonl)
+    rows = []
+    for mf in sorted(base_dir.glob("manifest*.jsonl")):
+        rows += [json.loads(l) for l in open(mf, encoding="utf-8")]
 
     out = {"train": open(ROOT / "data" / "audio" / "train.jsonl", "w", encoding="utf-8"),
            "val": open(ROOT / "data" / "audio" / "val.jsonl", "w", encoding="utf-8")}

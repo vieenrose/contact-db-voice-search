@@ -1,0 +1,10 @@
+fastrtc[tts]
+transformers>=4.47
+accelerate
+torch
+librosa
+soundfile
+scipy
+numpy
+rapidfuzz
+pypinyin
