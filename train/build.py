@@ -40,7 +40,13 @@ def make_trainable(model, r=16, alpha=32):
     lora = LoraConfig(r=r, lora_alpha=alpha, lora_dropout=0.05, bias="none",
                       target_modules=LLM_LORA_RE,
                       modules_to_save=["multi_modal_projector"])
-    return get_peft_model(model, lora)
+    model = get_peft_model(model, lora)
+    # fp16 AMP requires trainable params in fp32 (grad-scaler can't unscale fp16 grads;
+    # Pascal has no bf16). Frozen encoder + LLM stay fp16 to save the 8 GB card.
+    for p in model.parameters():
+        if p.requires_grad:
+            p.data = p.data.float()
+    return model
 
 
 def build_processor(audio_model=AUDIO_MODEL):
