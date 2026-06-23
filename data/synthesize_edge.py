@@ -72,6 +72,17 @@ def main():
                     help="manifest filename under data/audio/base (augment globs manifest*.jsonl)")
     args = ap.parse_args()
     voices = [v.strip() for v in args.voices.split(",") if v.strip()]
+    # Language pools: an English voice can't speak a Chinese-only text (edge-tts returns
+    # NoAudioReceived), so route by the text's language. zh/mix -> zh voices (they read
+    # embedded English names fine); en -> en voices.
+    zh_pool = [v for v in voices if v.startswith("zh-")]
+    en_pool = [v for v in voices if v.startswith("en-")]
+
+    def pick_voices(lang, idx):
+        pool = en_pool if lang == "en" else (zh_pool or en_pool)
+        if not pool:
+            pool = voices
+        return pool if args.assign == "all" else [pool[idx % len(pool)]]
 
     items = load_distinct(ROOT / "data" / "requests.jsonl")
     if args.limit:
@@ -82,8 +93,8 @@ def main():
     n = 0
     with tempfile.TemporaryDirectory() as td:
         for it in items:
-            # deterministic voice pick per text when assign=random (rotate by idx)
-            picks = voices if args.assign == "all" else [voices[it["idx"] % len(voices)]]
+            # language-aware voice pick (zh/mix -> zh voices, en -> en voices)
+            picks = pick_voices(it["lang"], it["idx"])
             for v in picks:
                 cid = f"e{it['idx']:05d}_{vkey(v)}"
                 mp3 = Path(td) / f"{cid}.mp3"
