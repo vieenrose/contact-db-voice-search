@@ -45,8 +45,9 @@ def load_distinct(requests_path):
     return out
 
 
-async def synth_mp3(text, voice, path):
-    await edge_tts.Communicate(text, voice).save(str(path))
+async def synth_mp3(text, voice, path, timeout=25):
+    # hard timeout so a hung edge-tts network call becomes a (resumable) skip, not a freeze
+    await asyncio.wait_for(edge_tts.Communicate(text, voice).save(str(path)), timeout=timeout)
 
 
 def mp3_to_wav(mp3, wav, sr=24000):
