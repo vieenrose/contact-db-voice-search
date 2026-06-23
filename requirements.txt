@@ -1,0 +1,18 @@
+# Data-generation env (CPU). Create with:
+#   python3 -m venv --system-site-packages .venv
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/python -c "import nltk; [nltk.download(r) for r in ['averaged_perceptron_tagger_eng','averaged_perceptron_tagger','cmudict']]"
+#
+# Then fetch the TTS model:
+#   hf download Luigi/PrimeTTS --local-dir models/PrimeTTS
+numpy
+scipy
+soundfile
+onnxruntime
+g2pw          # Taiwan bopomofo G2P (pulls torch)
+g2p_en        # English arpabet G2P (pulls nltk)
+cn2an         # Chinese number normalization (used by PrimeTTS text_norm)
+torch         # required by g2pw frontend (CPU is fine for data-gen)
+
+# Step-4 training (on the CUDA box) needs additionally: transformers, peft, trl,
+# accelerate, datasets, and torch built for CUDA (cu121). See HANDOFF.md.

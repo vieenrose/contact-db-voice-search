@@ -1,0 +1,17 @@
+# Python env (1.1 GB — recreate via requirements.txt)
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded model (60 MB — re-fetch: hf download Luigi/PrimeTTS --local-dir models/PrimeTTS)
+models/
+
+# Generated audio (recreate: synthesize.py + augment.py)
+data/audio/
+
+# NLTK / misc caches
+nltk_data/
+*.log
+
+# g2pw auto-downloaded bopomofo model
+G2PWModel/
