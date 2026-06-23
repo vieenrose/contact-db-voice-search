@@ -5,7 +5,7 @@ Reads data/directory.csv and emits the text a caller might speak (step 3 voices 
 with TTS), paired with the structured action the Ultravox model must produce. The
 schema fits the hybrid design (model = perception, controller = policy):
 
-  resolve   {action:"resolve", name, ext}                 # uniquely identified
+  resolve   {action:"resolve", name}                      # uniquely identified; ext via controller
   clarify   {action:"clarify", field, heard:{...}}        # underspecified -> ask
   not_found {action:"not_found"}                          # not in directory
 
@@ -141,7 +141,7 @@ def main():
     for c in contacts:
         pool = [t for t in RESOLVE if usable(c, t[2])]
         weighted = [t for t in pool for _ in range(LANG_W[t[1]])]
-        tgt = {"action": "resolve", "name": c["display_en"], "ext": c["ext"]}
+        tgt = {"action": "resolve", "name": c["display_en"]}  # ext resolved by controller from directory
         for _ in range(per):
             tmpl, lang, _ = rng.choice(weighted)
             emit(filler(fill(tmpl, c, rng), lang, rng), lang, "request", tgt)
@@ -149,7 +149,7 @@ def main():
     # 2) distractor resolves (caller self-intro prefix)
     for c in contacts:
         pool = [t for t in RESOLVE if usable(c, t[2])]
-        tgt = {"action": "resolve", "name": c["display_en"], "ext": c["ext"]}
+        tgt = {"action": "resolve", "name": c["display_en"]}  # ext resolved by controller from directory
         for _ in range(DISTRACTOR_PER_CONTACT):
             tmpl, lang, _ = rng.choice(pool)
             body = fill(tmpl, c, rng)

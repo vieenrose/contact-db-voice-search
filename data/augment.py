@@ -24,6 +24,7 @@ import numpy as np, soundfile as sf
 from scipy.signal import butter, sosfilt, resample_poly
 
 ROOT = Path(__file__).resolve().parent.parent
+TARGET_SR = 8000  # the telephony channel — ALL sources (PrimeTTS 8k, edge-tts 24k) normalize here
 
 
 def to_i16(x): return np.clip(x * 32767.0, -32768, 32767).astype(np.int16)
@@ -97,6 +98,12 @@ def main():
     n = 0
     for r in rows:
         x, sr = sf.read(r["wav"]); x = x.astype(np.float32)
+        if x.ndim > 1:                      # stereo -> mono
+            x = x.mean(axis=1)
+        if sr != TARGET_SR:                 # normalize the channel (edge-tts 24k -> 8k)
+            fr = Fraction(TARGET_SR, sr).limit_denominator(1000)
+            x = resample_poly(x, fr.numerator, fr.denominator).astype(np.float32)
+            sr = TARGET_SR
         for j in range(args.variants):
             # first variant is "light" (clean channel) so easy cases stay learnable
             y, augs = augment_one(x, sr, R, light=(j == 0))
