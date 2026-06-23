@@ -20,7 +20,7 @@ Usage:
   eval.py                                                    # self-test
 """
 from __future__ import annotations
-import argparse, csv, json
+import argparse, csv, json, re
 from collections import defaultdict
 from pathlib import Path
 
@@ -34,15 +34,23 @@ def load_dir_ext(directory_csv):
 
 
 def parse_pred(prediction: str) -> dict:
-    """Model output -> {action, name?}. Accepts JSON or a bare name string."""
-    prediction = (prediction or "").strip()
+    """Model output -> {action, name?}. Robust to the malformed JSON small models emit:
+    strict-parse first, else regex-extract the first "name" / detect not_found/clarify."""
+    s = (prediction or "").strip()
     try:
-        d = json.loads(prediction)
+        d = json.loads(s)
         if isinstance(d, dict) and "action" in d:
             return d
     except Exception:
         pass
-    return {"action": "resolve", "name": prediction}  # bare name
+    m = re.search(r'"name"\s*:\s*"([^"]+)"', s)         # the model's intended target
+    if m:
+        return {"action": "resolve", "name": m.group(1)}
+    if re.search(r'not[\s_]?found', s, re.I):
+        return {"action": "not_found"}
+    if re.search(r'clarify', s, re.I):
+        return {"action": "clarify"}
+    return {"action": "resolve", "name": s}             # bare name fallback
 
 
 def ground(pred: dict, R: Resolver) -> dict:

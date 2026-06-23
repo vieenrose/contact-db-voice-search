@@ -24,6 +24,13 @@ LLM_LORA_RE = r"language_model\..*\.(q_proj|k_proj|v_proj|o_proj)"
 
 
 def build_model(audio_model=AUDIO_MODEL, dtype=torch.float16):
+    if audio_model is None:
+        # STOCK: published Ultravox = large-v3-turbo encoder + PRETRAINED projector
+        # (audio->LLM already aligned; LoRA just adapts to our task). Heavier on gen1,
+        # but isolates whether the task is learnable before optimizing the encoder.
+        model = AutoModel.from_pretrained(BASE, trust_remote_code=True, dtype=dtype)
+        return model, model.config
+    # whisper-base swap: re-inits the projector (must be trained from scratch).
     cfg = AutoConfig.from_pretrained(BASE, trust_remote_code=True)
     cfg.audio_model_id = audio_model
     cfg.audio_config = WhisperConfig.from_pretrained(audio_model)   # 80 mel / d_model 512
@@ -50,9 +57,11 @@ def make_trainable(model, r=16, alpha=32):
 
 
 def build_processor(audio_model=AUDIO_MODEL):
-    """UltravoxProcessor with whisper-BASE feature extractor (80 mel) + Llama tokenizer."""
+    """UltravoxProcessor + Llama tokenizer. Swaps in the whisper-base feature extractor
+    (80 mel) unless audio_model is None (stock => keep the 128-mel large extractor)."""
     proc = transformers.AutoProcessor.from_pretrained(BASE, trust_remote_code=True)
-    proc.audio_processor = WhisperFeatureExtractor.from_pretrained(audio_model)
+    if audio_model is not None:
+        proc.audio_processor = WhisperFeatureExtractor.from_pretrained(audio_model)
     return proc
 
 

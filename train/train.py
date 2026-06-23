@@ -23,7 +23,7 @@ import transformers
 from transformers import Trainer, TrainingArguments
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build import build_model, make_trainable, build_processor
+from build import build_model, make_trainable, build_processor, AUDIO_MODEL
 
 ASR_SR = 16000
 SYS = ("You are a phone attendant for a Taiwan office. Identify the colleague the "
@@ -96,10 +96,13 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--stock", action="store_true",
+                    help="stock large encoder + pretrained projector (no whisper-base swap)")
     args = ap.parse_args()
 
-    processor = build_processor()
-    model, _ = build_model()
+    audio_model = None if args.stock else AUDIO_MODEL
+    processor = build_processor(audio_model)
+    model, _ = build_model(audio_model)
     model = make_trainable(model)
     model.config.use_cache = False
     if hasattr(model, "enable_input_require_grads"):

@@ -14,7 +14,7 @@ import torch
 from peft import PeftModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build import build_model, build_processor
+from build import build_model, build_processor, AUDIO_MODEL
 from train import SYS, load_wav_16k
 
 
@@ -24,11 +24,13 @@ def main():
     ap.add_argument("--test", default="data/audio/test.jsonl")
     ap.add_argument("--out", default=None)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--stock", action="store_true", help="match a --stock trained model")
     args = ap.parse_args()
     out_path = args.out or str(Path(args.model) / "preds.jsonl")
 
-    processor = build_processor()
-    base, _ = build_model()
+    audio_model = None if args.stock else AUDIO_MODEL
+    processor = build_processor(audio_model)
+    base, _ = build_model(audio_model)
     model = PeftModel.from_pretrained(base, args.model).cuda().eval()
     tok = processor.tokenizer
 
