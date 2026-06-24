@@ -38,9 +38,15 @@ def main():
             inp = proc(text=prompt, audio=[wav], sampling_rate=ASR_SR, return_tensors="pt")
             inp = {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in inp.items()}
             with torch.no_grad():
-                gen = model.generate(**inp, max_new_tokens=24, do_sample=False)
-            pred = tok.decode(gen[0][inp["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-            out.write(json.dumps({"audio": r["audio"], "prediction": pred}, ensure_ascii=False) + "\n")
+                gen = model.generate(**inp, max_new_tokens=24, do_sample=False,
+                                     output_scores=True, return_dict_in_generate=True)
+            seq = gen.sequences[0][inp["input_ids"].shape[1]:]
+            pred = tok.decode(seq, skip_special_tokens=True).strip()
+            # avg token log-prob of the generated text = confidence (closer to 0 = more sure)
+            lps = [torch.log_softmax(s[0].float(), -1)[t].item() for t, s in zip(seq, gen.scores)]
+            conf = sum(lps) / len(lps) if lps else -99.0
+            out.write(json.dumps({"audio": r["audio"], "prediction": pred,
+                                  "conf": round(conf, 4)}, ensure_ascii=False) + "\n")
             if i % 100 == 0:
                 print(f"  [{i+1}/{len(rows)}] {pred[:48]}")
     print(f"wrote {len(rows)} preds -> {out_path}")
