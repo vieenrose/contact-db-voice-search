@@ -27,7 +27,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 SEED = 20260623
-PER_CONTACT_DEFAULT = 12
+PER_CONTACT_DEFAULT = 16          # v3: more data overall
 DISTRACTOR_PER_CONTACT = 3
 CLARIFY_PER_GROUP = 4
 NEG_FRACTION = 0.15
@@ -72,6 +72,11 @@ RESOLVE = [
     ("請問{zh}的分機是多少", "zh", ("full_chinese",)),
     ("我找{dept_zh}的{zh}", "zh", ("full_chinese",)),
     ("可以幫我接{zh}嗎", "zh", ("full_chinese",)),
+    ("請問{zh}在嗎", "zh", ("full_chinese",)),               # v3: more zh phrasings
+    ("我想找一下{zh}{hon_zh}", "zh", ("full_chinese",)),
+    ("幫我接{zh}的分機", "zh", ("full_chinese",)),
+    ("請問{zh}的分機幾號", "zh", ("full_chinese",)),
+    ("麻煩轉{zh}", "zh", ("full_chinese",)),
     ("幫我轉 {first} {sur_en}", "mix", ("english_first", "surname_pinyin")),
     ("請接 {first}，{sur_zh}{hon_zh}", "mix", ("english_first", "surname_hanzi")),
     ("麻煩接一下 {en}", "mix", ("display_en",)),
@@ -119,7 +124,7 @@ def main():
     reveal_sets = {t[2] for t in RESOLVE}
     counts = {fs: Counter(tuple(c[f] for f in fs) for c in contacts) for fs in reveal_sets}
     usable = lambda c, fs: counts[fs][tuple(c[f] for f in fs)] == 1
-    LANG_W = {"en": 1, "zh": 2, "mix": 2}
+    LANG_W = {"en": 1, "zh": 3, "mix": 2}     # v3: weight zh higher to push Mandarin
 
     by_first = defaultdict(list)
     by_sur = defaultdict(list)

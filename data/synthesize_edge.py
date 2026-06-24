@@ -15,7 +15,7 @@ In : data/requests.jsonl
 Out: data/audio/base/<id>__<voice>.wav + data/audio/base/manifest_edge.jsonl
 """
 from __future__ import annotations
-import argparse, asyncio, json, subprocess, sys, tempfile
+import argparse, asyncio, hashlib, json, subprocess, sys, tempfile
 from pathlib import Path
 
 import edge_tts
@@ -97,7 +97,9 @@ def main():
             # language-aware voice pick (zh/mix -> zh voices, en -> en voices)
             picks = pick_voices(it["lang"], it["idx"])
             for v in picks:
-                cid = f"e{it['idx']:05d}_{vkey(v)}"
+                # stable id from text+voice so resume stays correct across request changes
+                th = hashlib.md5(it["text"].encode("utf-8")).hexdigest()[:10]
+                cid = f"e{th}_{vkey(v)}"
                 mp3 = Path(td) / f"{cid}.mp3"
                 wav = out_dir / f"{cid}.wav"
                 if not (wav.exists() and wav.stat().st_size > 0):   # resume: skip done clips
