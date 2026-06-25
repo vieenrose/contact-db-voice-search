@@ -75,8 +75,23 @@ class Contact:
     ext: str
     zh: str
     dept: str
-    en_key: str        # normalized english
+    en_key: str        # normalized english "first surname"
+    en_first: str
+    en_sur: str
+    zh_sur: str        # surname hanzi (first char)
+    zh_given: str      # given hanzi (rest)
     zh_pin: str        # pinyin of full chinese name
+
+
+def _pair(q, c):
+    """Both-components score: a FULL name (2 tokens) must match first AND surname;
+    a single token matches either (underspecified -> will tie multiple -> clarify)."""
+    qf = q.split()
+    cf, cs = (c[0], c[-1]) if len(c) >= 2 else (c[0], c[0])
+    if len(qf) >= 2:
+        f, s = fuzz.ratio(qf[0], cf), fuzz.ratio(qf[-1], cs)
+        return (f + s) / 2 if f >= 75 and s >= 75 else min(f, s) * 0.5   # both required
+    return max(fuzz.ratio(qf[0], cf), fuzz.ratio(qf[0], cs)) if qf else 0.0
 
 
 class Resolver:
@@ -84,23 +99,26 @@ class Resolver:
         self.contacts: list[Contact] = []
         with open(directory_csv, encoding="utf-8") as f:
             for r in csv.DictReader(f):
+                en = _norm_en(r["display_en"]); parts = en.split()
+                zh = r["full_chinese"]
                 self.contacts.append(Contact(
-                    name=r["display_en"], ext=r["ext"], zh=r["full_chinese"],
-                    dept=r["department"], en_key=_norm_en(r["display_en"]),
-                    zh_pin=_to_pinyin(r["full_chinese"])))
+                    name=r["display_en"], ext=r["ext"], zh=zh, dept=r["department"],
+                    en_key=en, en_first=parts[0], en_sur=parts[-1],
+                    zh_sur=zh[:1], zh_given=zh[1:], zh_pin=_to_pinyin(zh)))
 
     def _score(self, q_en: str, q_zh: str, q_pin: str, c: Contact) -> float:
-        s = 0.0
-        if q_en:
-            s = max(s, fuzz.WRatio(q_en, c.en_key))
-            if c.zh_pin:                      # romanized query vs chinese-name pinyin
-                s = max(s, fuzz.WRatio(q_en, c.zh_pin))
-        if q_zh:
-            s = max(s, fuzz.ratio(q_zh, c.zh) * (1.0 if q_zh == c.zh else 0.95))
-        if q_pin and c.zh_pin:                # chinese query vs record pinyin (cross-script)
-            s = max(s, fuzz.WRatio(q_pin, c.zh_pin))
-            s = max(s, fuzz.WRatio(q_pin, c.en_key))
-        return s
+        if q_zh:                              # Chinese query -> precise hanzi path (surname char + given)
+            if len(q_zh) >= 2:
+                fs = 100 if q_zh[0] == c.zh_sur else 0
+                gs = fuzz.ratio(q_zh[1:], c.zh_given)
+                return (fs + gs) / 2 if fs and gs >= 60 else min(fs, gs) * 0.5
+            return 100.0 if q_zh[0] == c.zh_sur else 0.0     # surname-only -> ties many -> clarify
+        if q_en:                              # romanized / English query
+            s = _pair(q_en, [c.en_first, c.en_sur])          # English name (component-aware)
+            if c.zh_pin:                      # cross-script: romanized -> chinese pinyin (order-free)
+                s = max(s, fuzz.token_sort_ratio(q_en, c.zh_pin))
+            return s
+        return 0.0
 
     def rank(self, query: str, k: int = 5):
         q = query.strip()
@@ -124,7 +142,10 @@ class Resolver:
                 for s, x in ranked if s >= LOW]
         if top < LOW:
             return {"action": "not_found", "query": query, "best": c.name, "score": round(top, 1)}
-        if top >= HIGH and (top - second) >= MARGIN:
+        n_strong = sum(1 for s, _ in ranked if s >= HIGH)
+        # resolve when there's ONE clearly-best strong match; clarify only when two strong
+        # candidates are genuinely close (underspecified), or the best match is weak.
+        if top >= HIGH and (n_strong < 2 or (top - second) >= MARGIN):
             return {"action": "resolve", "name": c.name, "ext": c.ext, "dept": c.dept,
                     "score": round(top, 1)}
         return {"action": "clarify", "query": query, "candidates": cand[:4]}

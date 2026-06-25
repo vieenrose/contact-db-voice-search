@@ -1,11 +1,8 @@
-fastrtc[tts]
-transformers>=4.47
-accelerate
-peft
-torch
-librosa
+gradio>=5
+pandas
+rapidfuzz
+pypinyin
+faster-whisper
 soundfile
 scipy
 numpy
-rapidfuzz
-pypinyin

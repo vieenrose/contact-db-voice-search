@@ -1,5 +1,5 @@
 ---
-title: Taiwan Office Attendant (Ultravox baseline)
+title: Taiwan Office Attendant — DB Query View (v5)
 emoji: ☎️
 colorFrom: indigo
 colorTo: blue
@@ -7,29 +7,26 @@ sdk: gradio
 sdk_version: 5.9.1
 app_file: app.py
 pinned: false
-short_description: zh-TW/en phone attendant — stock Ultravox baseline
+short_description: Live contact-DB query view for the zh-TW/en voice attendant
 ---
 
-# ☎️ Taiwan Office Attendant — Ultravox baseline (untrained)
+# ☎️ Taiwan Office Attendant — live DB-query view (v5)
 
-Real-time voice demo of a **zh-TW/en telephone auto-attendant** that finds a
-colleague's **extension** from a spoken name (English first name + Chinese surname,
-often code-switched). Speak into the mic: *"Could you put me through to Kevin Chen?"*
-or *"我要找陳凱文"*.
+Demonstrates the **winning design** from the project (92.8% task success / 1.8% misroute,
+**Mandarin 98.4%**): a heard name → the **live contact directory** is searched with phonetic
+**distance scores** → the person is **located**, the system **asks to clarify**, or it **rejects**
+an unknown name.
 
-## How it works
-- **Ultravox** (`fixie-ai/ultravox-v0_5-llama-3_2-1b`) does **perception** — it hears
-  the requested name.
-- **`resolver.py`** does **policy** — fuzzy-matches the heard name to a real row in a
-  closed 200-person directory and returns the extension (resolve / clarify / not-found).
-- **Push-to-talk** (record → submit); Kokoro TTS speaks the confirmation.
+## What you see
+- **Type a name** (English, 中文, or an unknown one) → the *exact* component-aware resolver from
+  the benchmark ranks all 200 contacts by distance and decides resolve / clarify / not-found.
+- **Or speak** → a small CPU Whisper transcribes first (rougher than the GPU Qwen-Omni-3B used in
+  the benchmark, but the DB-query view is identical).
+- The ranked candidate table + score bars show **how the DB is queried** and **which person is located**.
 
-> Runs on a **free CPU** Space, so a 1B model is **slow** (tens of seconds per request).
-> The Ultravox base (Llama-3.2-1B) is gated — the Space uses an `HF_TOKEN` secret with access.
-> This is the untrained baseline, not the optimized on-device build.
+## The key architecture point
+The directory lives in **`directory.csv`** — *not in the model weights*. Edit a contact, the
+search updates instantly, **no retraining**. Unknown names get low scores → rejected (no misroute).
+On the gen1 the resolver runs trivially on CPU; only the perception model needs a GPU/Orin.
 
-## This is a baseline
-The model is **not fine-tuned**. It shows how *stock* Ultravox handles Taiwan
-code-switched names over voice — i.e. the gap that domain fine-tuning + a
-telephony-adapted whisper-base encoder are meant to close for on-device (Jetson Nano)
-deployment.
+Try: `蔡孟儒` (resolve), `Tseng` (surname only → clarify), `David Miller` (unknown → not found).
