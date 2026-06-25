@@ -39,8 +39,11 @@ def parse_pred(prediction: str) -> dict:
     s = (prediction or "").strip()
     try:
         d = json.loads(s)
-        if isinstance(d, dict) and "action" in d:
-            return d
+        if isinstance(d, dict):
+            if "query" in d:                  # v5 search-query target -> resolve via resolver
+                return {"action": "resolve", "name": d["query"]}
+            if "action" in d:
+                return d
     except Exception:
         pass
     m = re.search(r'"name"\s*:\s*"([^"]+)"', s)         # the model's intended target

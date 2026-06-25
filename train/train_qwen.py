@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_qwen import build_model, make_trainable, build_processor
 
 ASR_SR = 16000
-SYS = ("You are a phone attendant for a Taiwan office. Identify the colleague the caller "
-       "is asking for and respond ONLY with JSON: "
-       '{"action":"resolve","name":"<English name>"}, {"action":"clarify",...}, or {"action":"not_found"}.')
+SYS = ("You are a phone attendant for a Taiwan office. Output ONLY the name of the colleague "
+       "the caller wants to reach, exactly as you hear it (Chinese characters or English), as "
+       'JSON: {"query":"<name>"}. If the caller introduces themselves, ignore their own name.')
 
 
 def load_wav_16k(path):
