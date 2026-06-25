@@ -29,3 +29,15 @@ Fix in progress: confidence gate (low avg token log-prob → not_found) and/or m
 ## Deployment implication
 - **Ultravox-1B** = gen1-deployable, English-first (68% en), Mandarin-weak.
 - **Qwen-Omni-3B** = genuine bilingual (97% zh), but 3B → **Orin-class**, not gen1 real-time.
+
+## v5 — agentic perception→retrieval (the winning design)
+
+| Run | Task success | Misroute | zh | not_found |
+|---|---|---|---|---|
+| v4 Qwen baked-mapping | 81% | 8.2% | 83% | 42% / 38% mis |
+| **v5 Qwen agentic + resolver** | **92.8%** | **1.8%** | **98.4%** | **73% / 6.2% mis** |
+
+v5: model emits `{"query":"<heard name>"}`; the fixed component-aware resolver maps it to the
+LIVE directory. DB-external (edit CSV, no retrain), OOD rejected at the resolver, Mandarin 98.4%.
+Best result. Remaining: English (83%, confusable surnames), misroute 1.8% > 0.5% target,
+real-caller validation, multi-turn clarify (phase 2).
