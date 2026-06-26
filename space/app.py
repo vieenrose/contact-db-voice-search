@@ -1,30 +1,25 @@
 """Taiwan Office Attendant — LiveKit-style tool-calling demo (no LiveKit).
 
-Shows the agent loop that powers the attendant: a heard name → the model emits a
-`search_contacts` **tool call** → our `tools.py` registry **dispatches** it against the
-live directory → the ranked matches are fed back as the **tool response** → the model
-**replies** (connect / clarify / not-found).
+A typed name → the model emits a `search_contacts` tool call → our `tools.py` registry
+dispatches it against the live directory → the ranked matches come back as the tool
+response → the model connects / clarifies / rejects. The registry + parser + dispatch
+loop is the SAME code the fine-tuned Qwen-Omni agent uses (registered like LiveKit's
+@function_tool), with zero LiveKit dependency.
 
-The tool layer (registry + parser + dispatch) is the *exact same* `tools.py` used by the
-fine-tuned Qwen-Omni agent — registered just like LiveKit's `@function_tool`, but with no
-LiveKit dependency. On this free CPU Space the model's turn is simulated (the 3B needs a
-GPU); the tool *protocol and dispatch are real*. Swapping in the GPU model later changes
-only who emits the tool call — the loop, tools, and DB are unchanged.
+Text-only on this free CPU Space: the 3B audio model needs a GPU, and the tool protocol
+is what this demo is about. Voice input returns with the GPU-served model.
 """
 import json
-from fractions import Fraction
 
-import numpy as np
 import pandas as pd
 import gradio as gr
-from scipy.signal import resample_poly
 
 from resolver import Resolver
 from tools import registry, parse_tool_calls
 
-# Gradio 5.9.x get_api_info() (run at launch even with show_api=False) crashes on boolean
-# JSON schemas -> "TypeError: argument of type 'bool' is not iterable", which cascades into
-# a "localhost not accessible" launch failure. Guard the recursion against bool schemas.
+# Defensive guard: Gradio 5.9.x get_api_info() crashes on boolean JSON schemas
+# ("TypeError: argument of type 'bool' is not iterable"). Harmless once the offending
+# component (gr.Audio) is gone, but kept so a future component can't reintroduce it.
 import gradio_client.utils as _gcu
 _orig_js2pt = _gcu._json_schema_to_python_type
 def _safe_js2pt(schema, defs=None):
@@ -38,39 +33,6 @@ N = len(R.contacts)
 TOOL_SCHEMA_JSON = json.dumps(registry.schemas(), indent=2, ensure_ascii=False)
 DIRECTORY_DF = pd.DataFrame([{"name": c.name, "中文名": c.zh, "dept": c.dept, "ext": c.ext}
                              for c in R.contacts])
-
-# Optional CPU transcription. Lazy + guarded so text input always works.
-_asr = None
-def transcribe(sr, wav):
-    global _asr
-    try:
-        if _asr is None:
-            from faster_whisper import WhisperModel
-            _asr = WhisperModel("small", device="cpu", compute_type="int8")
-        wav = np.asarray(wav, dtype=np.float32)
-        if wav.ndim > 1:
-            wav = wav.mean(-1)
-        if np.max(np.abs(wav)) > 1.5:
-            wav = wav / 32768.0
-        if sr != 16000:
-            fr = Fraction(16000, sr).limit_denominator(1000)
-            wav = resample_poly(wav, fr.numerator, fr.denominator).astype(np.float32)
-        segs, _ = _asr.transcribe(wav, language=None, beam_size=1)
-        return "".join(s.text for s in segs).strip()
-    except Exception as e:
-        return f"[transcription unavailable: {type(e).__name__}]"
-
-# strip common request filler so the residual is the name (the FT model does this implicitly)
-FILLER = ["我要找", "請幫我轉接", "麻煩幫我接", "可以幫我接", "請問", "的分機是多少", "的分機幾號",
-          "幫我接", "幫我轉", "麻煩轉", "找", "在嗎", "嗎", "您好", "你好", "謝謝", "先生", "小姐",
-          "could you put me through to", "i'd like to speak to", "can i get", "transfer me to",
-          "what's the extension for", "connect me with", "please", "extension", "'s", "hi", "hello",
-          "i'm looking for", "is", "there", "the", "?", ",", ".", "之分機"]
-def extract_name(text):
-    t = text
-    for f in sorted(FILLER, key=len, reverse=True):
-        t = t.replace(f, " ")
-    return " ".join(t.split()).strip() or text
 
 
 def compose_reply(matches):
@@ -103,59 +65,48 @@ def trace_md(query, tool_call_obj, matches):
         "**3 · 🤖 assistant → reply** *(reasons from the tool response below)*")
 
 
-def search(audio, typed):
-    # 1) get the heard query
-    if typed and typed.strip():
-        heard, query = typed.strip(), typed.strip()
-    elif audio is not None:
-        sr, wav = audio
-        heard = transcribe(sr, wav)
-        query = extract_name(heard)
-    else:
-        return "Type a name or record a request.", "", pd.DataFrame(), pd.DataFrame(), ""
+def search(typed):
+    query = (typed or "").strip()
+    if not query:
+        return "Type a name above.", "", pd.DataFrame(), pd.DataFrame(), ""
 
-    # 2) the LiveKit-style loop — REAL tool layer: the model emits a Hermes tool call,
-    #    tools.py parses it and dispatches it against the live directory.
+    # the LiveKit-style loop — REAL tool layer: the model emits a Hermes tool call,
+    # tools.py parses it and dispatches it against the live directory.
     tool_call_obj = {"name": "search_contacts", "arguments": {"query": query}}
     model_out = f"<tool_call>{json.dumps(tool_call_obj, ensure_ascii=False)}</tool_call>"
-    call = parse_tool_calls(model_out)[0]                  # parse (handles Hermes + OpenAI)
-    matches = registry.dispatch(call["name"], call["arguments"])   # dispatch via the registry
+    call = parse_tool_calls(model_out)[0]
+    matches = registry.dispatch(call["name"], call["arguments"])
 
-    # 3) viz: full ranked DB + the model's reply reasoned from the tool response
     ranked = R.rank(query, k=6)
     rows = [{"rank": i + 1, "name": c.name, "中文名": c.zh, "dept": c.dept,
              "ext": c.ext, "score": round(s, 1)} for i, (s, c) in enumerate(ranked)]
     df = pd.DataFrame(rows)
     plot_df = pd.DataFrame({"contact": [r["name"] for r in rows], "score": [r["score"] for r in rows]})
     _, card = compose_reply(matches)
-
-    return (f"### 🗣️ heard: **{heard}**\n**query →** `{query}`",
-            trace_md(query, tool_call_obj, matches), df, plot_df, card)
+    return (f"### 🗣️ query: **{query}**", trace_md(query, tool_call_obj, matches), df, plot_df, card)
 
 
-EXAMPLES = [[None, "蔡孟儒"], [None, "Coco Kuo"], [None, "周宜蓁"],
-            [None, "Tseng"], [None, "Carol Hsieh"], [None, "David Miller"]]
+EXAMPLES = [["蔡孟儒"], ["Coco Kuo"], ["周宜蓁"], ["Tseng"], ["Carol Hsieh"], ["David Miller"]]
 
 with gr.Blocks(title="Taiwan Attendant — LiveKit-style tool calling") as demo:
     gr.Markdown(
         "# ☎️ Taiwan Office Attendant — LiveKit-style tool calling *(no LiveKit)*\n"
-        "A heard name → the model emits a **`search_contacts` tool call** → our `tools.py` registry "
+        "Type a name → the model emits a **`search_contacts` tool call** → our `tools.py` registry "
         "**dispatches** it against the **live directory** → the ranked matches come back as the "
         "**tool response** → the model **connects**, **clarifies**, or **rejects** an unknown name.\n\n"
         "The registry + parser + dispatch loop is the *same* code the fine-tuned Qwen-Omni agent uses — "
         "registered just like LiveKit's `@function_tool`, with **zero LiveKit dependency**. "
-        "*(On free CPU the model's turn is simulated; the tool protocol & dispatch are real.)*\n\n"
+        "*(Text-only on free CPU; voice input returns with the GPU-served model.)*\n\n"
         "Try a real name (`蔡孟儒`), a surname only (`Tseng` → clarify), or an unknown one "
         "(`David Miller` → not found). The directory is a CSV — *edit it, no retraining*.")
     with gr.Row():
         with gr.Column(scale=1):
-            audio_in = gr.Audio(sources=["microphone"], type="numpy", label="🎙️ Speak a request")
-            text_in = gr.Textbox(value="蔡孟儒", label="…or type a name",
+            text_in = gr.Textbox(value="蔡孟儒", label="Type a name",
                                  placeholder="蔡孟儒 / Kevin Chen / Tseng / David Miller")
             btn = gr.Button("🔍 Run agent turn", variant="primary")
-            gr.Examples(EXAMPLES, inputs=[audio_in, text_in], label="Try these")
+            gr.Examples(EXAMPLES, inputs=[text_in], label="Try these")
             with gr.Accordion(f"📇 The live directory — {N} contacts (edit the CSV, no retraining)", open=False):
-                gr.Dataframe(DIRECTORY_DF, label=None, interactive=False, max_height=320)
+                gr.Dataframe(DIRECTORY_DF, interactive=False, max_height=320)
             with gr.Accordion("🔧 Registered tools (LiveKit-style schema)", open=False):
                 gr.Markdown("Auto-derived from each Python function's signature — the same OpenAI "
                             "tool schema LiveKit builds for `@function_tool`:")
@@ -167,9 +118,9 @@ with gr.Blocks(title="Taiwan Attendant — LiveKit-style tool calling") as demo:
             score_plot = gr.BarPlot(x="contact", y="score", title="match score", y_lim=[0, 100], height=200)
             result_md = gr.Markdown()
     outputs = [heard_md, trace, cand_df, score_plot, result_md]
-    btn.click(search, [audio_in, text_in], outputs, api_name="search")
-    text_in.submit(search, [audio_in, text_in], outputs)
-    demo.load(search, [audio_in, text_in], outputs)   # populate a result on page load (DB is live)
+    btn.click(search, [text_in], outputs, api_name="search")
+    text_in.submit(search, [text_in], outputs)
+    demo.load(search, [text_in], outputs)   # populate a result on page load (DB is live)
 
 if __name__ == "__main__":
     demo.queue(default_concurrency_limit=4)

@@ -2,7 +2,3 @@ gradio>=5
 pandas
 rapidfuzz
 pypinyin
-faster-whisper
-soundfile
-scipy
-numpy
