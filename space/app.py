@@ -68,7 +68,7 @@ def trace_md(query, tool_call_obj, matches):
 def search(typed):
     query = (typed or "").strip()
     if not query:
-        return "Type a name above.", "", pd.DataFrame(), pd.DataFrame(), ""
+        return "Type a name above.", "", pd.DataFrame(), ""
 
     # the LiveKit-style loop — REAL tool layer: the model emits a Hermes tool call,
     # tools.py parses it and dispatches it against the live directory.
@@ -81,9 +81,8 @@ def search(typed):
     rows = [{"rank": i + 1, "name": c.name, "中文名": c.zh, "dept": c.dept,
              "ext": c.ext, "score": round(s, 1)} for i, (s, c) in enumerate(ranked)]
     df = pd.DataFrame(rows)
-    plot_df = pd.DataFrame({"contact": [r["name"] for r in rows], "score": [r["score"] for r in rows]})
     _, card = compose_reply(matches)
-    return (f"### 🗣️ query: **{query}**", trace_md(query, tool_call_obj, matches), df, plot_df, card)
+    return (f"### 🗣️ query: **{query}**", trace_md(query, tool_call_obj, matches), df, card)
 
 
 EXAMPLES = [["蔡孟儒"], ["Coco Kuo"], ["周宜蓁"], ["Tseng"], ["Carol Hsieh"], ["David Miller"]]
@@ -115,9 +114,8 @@ with gr.Blocks(title="Taiwan Attendant — LiveKit-style tool calling") as demo:
             heard_md = gr.Markdown()
             trace = gr.Markdown()
             cand_df = gr.Dataframe(label="DB candidates (ranked by distance score)", interactive=False)
-            score_plot = gr.BarPlot(x="contact", y="score", title="match score", y_lim=[0, 100], height=200)
             result_md = gr.Markdown()
-    outputs = [heard_md, trace, cand_df, score_plot, result_md]
+    outputs = [heard_md, trace, cand_df, result_md]
     btn.click(search, [text_in], outputs, api_name="search")
     text_in.submit(search, [text_in], outputs)
     demo.load(search, [text_in], outputs)   # populate a result on page load (DB is live)
