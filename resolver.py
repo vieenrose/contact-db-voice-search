@@ -132,36 +132,74 @@ class Resolver:
             pool = [c for c in pool if c.dept.lower() == dept]
         return pool
 
-    def rank(self, query: str, k: int = 5, filters=None):
+    def _parse_query(self, query: str):
         q = query.strip()
         q_zh = "".join(CJK.findall(q))
         q_zh = ZH_HON.sub("", q) if not q_zh else q_zh
         q_zh = "".join(CJK.findall(q_zh))
         q_en = _norm_en(q) if re.search(r"[A-Za-z]", q) else ""
         q_pin = _to_pinyin(q_zh) if q_zh else ""
+        return q_en, q_zh, q_pin
+
+    @staticmethod
+    def _is_exact(q_en, q_zh, c) -> bool:
+        """The query string IS this contact's name (full, both components) — not just a
+        fuzzy neighbour. The decisive signal that survives at scale."""
+        if q_zh:
+            return len(q_zh) >= 2 and q_zh == c.zh
+        return bool(q_en) and len(q_en.split()) >= 2 and q_en == c.en_key
+
+    def rank(self, query: str, k: int = 5, filters=None):
+        q_en, q_zh, q_pin = self._parse_query(query)
         scored = [(self._score(q_en, q_zh, q_pin, c), c) for c in self._pool(filters)]
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[:k]
 
-    def resolve(self, query: str, filters=None) -> dict:
+    @staticmethod
+    def _card(s, x):
+        return {"name": x.name, "ext": x.ext, "dept": x.dept, "score": round(s, 1)}
+
+    def resolve(self, query: str, filters=None, scaled=False) -> dict:
         """Return an action dict the controller can act on. `filters` narrows the search
-        by a caller-supplied attribute (department) to resolve same-name collisions."""
+        by a caller-supplied attribute (department) to resolve same-name collisions.
+
+        scaled=False: the N=200-tuned decision (resolve / clarify / not_found), unchanged.
+        scaled=True : exact-match-aware + adds a `confirm` action. At scale almost every
+        plausible name has a real near-homophone, so a non-exact strong match is CONFIRMED
+        ("did you mean X?") rather than silently connected — turning silent misroutes into
+        a safe one-turn check and giving OOD names a way to be rejected."""
         ranked = self.rank(query, filters=filters)
         if not ranked:
             return {"action": "not_found", "query": query}
         top, c = ranked[0]
         second = ranked[1][0] if len(ranked) > 1 else 0.0
-        cand = [{"name": x.name, "ext": x.ext, "dept": x.dept, "score": round(s, 1)}
-                for s, x in ranked if s >= LOW]
-        if top < LOW:
-            return {"action": "not_found", "query": query, "best": c.name, "score": round(top, 1)}
-        n_strong = sum(1 for s, _ in ranked if s >= HIGH)
-        # resolve when there's ONE clearly-best strong match; clarify only when two strong
-        # candidates are genuinely close (underspecified), or the best match is weak.
-        if top >= HIGH and (n_strong < 2 or (top - second) >= MARGIN):
-            return {"action": "resolve", "name": c.name, "ext": c.ext, "dept": c.dept,
-                    "score": round(top, 1)}
-        return {"action": "clarify", "query": query, "candidates": cand[:4]}
+        cand = [self._card(s, x) for s, x in ranked if s >= LOW]
+
+        if not scaled:
+            if top < LOW:
+                return {"action": "not_found", "query": query, "best": c.name, "score": round(top, 1)}
+            n_strong = sum(1 for s, _ in ranked if s >= HIGH)
+            if top >= HIGH and (n_strong < 2 or (top - second) >= MARGIN):
+                return {"action": "resolve", "name": c.name, "ext": c.ext, "dept": c.dept,
+                        "score": round(top, 1)}
+            return {"action": "clarify", "query": query, "candidates": cand[:4]}
+
+        # --- scaled decision ---
+        q_en, q_zh, _ = self._parse_query(query)
+        exact = [(s, x) for s, x in ranked if self._is_exact(q_en, q_zh, x)]
+        if len(exact) == 1:                                   # unique exact -> connect (no over-clarify)
+            s, x = exact[0]
+            return {"action": "resolve", "name": x.name, "ext": x.ext, "dept": x.dept, "score": round(s, 1)}
+        if len(exact) >= 2:                                   # true homonyms -> disambiguate
+            return {"action": "clarify", "query": query,
+                    "candidates": [self._card(s, x) for s, x in exact][:4]}
+        # no exact match: a strong, clearly-leading single guess -> CONFIRM before connecting
+        if top >= HIGH and (top - second) >= MARGIN:
+            return {"action": "confirm", "query": query, "name": c.name, "ext": c.ext,
+                    "dept": c.dept, "score": round(top, 1)}
+        if top >= LOW:                                        # several plausible -> clarify
+            return {"action": "clarify", "query": query, "candidates": cand[:4]}
+        return {"action": "not_found", "query": query, "best": c.name, "score": round(top, 1)}
 
 
 if __name__ == "__main__":

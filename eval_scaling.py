@@ -77,81 +77,91 @@ def build_cases(R, rng, n_each):
     return cases
 
 
-def evaluate(tier, path, n_each=200, seed=11):
+def evaluate(tier, path, scaled=False, n_each=200, seed=11):
+    """Caller oracle: on a `confirm`, the caller says YES iff the offered ext is the
+    intended person — so confirm turns silent misroutes into safe one-turn checks and
+    lets absent names be rejected. clarify is followed by a department refine."""
     rng = random.Random(seed)
     R = Resolver(path)
-    by_ext = {c.ext: c for c in R.contacts}
     cases = build_cases(R, rng, n_each)
 
     m = defaultdict(int)
-    by_type = defaultdict(lambda: defaultdict(int))
+    bt = defaultdict(lambda: defaultdict(int))
     turns_sum = turns_n = 0
     t0 = time.perf_counter()
     n_resolves = 0
 
+    def confirm_yes(res, intended):
+        return res.get("ext") == intended           # caller confirms iff it's the right person
+
     for kind, query, dept, exp in cases:
-        by_type[kind]["n"] += 1
-        res = R.resolve(query)
-        n_resolves += 1
-        a = res["action"]
-        got = res.get("ext")
+        bt[kind]["n"] += 1
+        res = R.resolve(query, scaled=scaled); n_resolves += 1
+        a, got = res["action"], res.get("ext")
 
         if kind == "unique":
             if a == "resolve" and got == exp:
-                by_type[kind]["ok"] += 1; turns_sum += 1; turns_n += 1
+                bt[kind]["ok"] += 1; turns_sum += 1; turns_n += 1
             elif a == "resolve":
-                m["misroute"] += 1; by_type[kind]["misroute"] += 1
+                m["misroute"] += 1; bt[kind]["misroute"] += 1
+            elif a == "confirm":
+                if confirm_yes(res, exp): bt[kind]["ok"] += 1; turns_sum += 2; turns_n += 1
+                else: bt[kind]["miss"] += 1          # safe (caller declines) but didn't connect
             elif a == "clarify":
-                by_type[kind]["overclarify"] += 1
+                bt[kind]["overclarify"] += 1
             else:
-                by_type[kind]["miss"] += 1
+                bt[kind]["miss"] += 1
 
         elif kind == "collision":
-            if a == "resolve":                      # picked one ext from many same-name -> misroute
-                m["misroute"] += 1; by_type[kind]["misroute"] += 1
-            elif a == "clarify":                    # correct: now refine by department
-                r2 = R.resolve(query, filters={"department": dept}); n_resolves += 1
+            if a == "resolve":                        # picked one ext from many same-name -> misroute
+                m["misroute"] += 1; bt[kind]["misroute"] += 1
+            elif a in ("clarify", "confirm"):         # refine by department
+                r2 = R.resolve(query, filters={"department": dept}, scaled=scaled); n_resolves += 1
                 if r2["action"] == "resolve" and r2.get("ext") == exp:
-                    by_type[kind]["disambig_ok"] += 1; turns_sum += 2; turns_n += 1
+                    bt[kind]["disambig_ok"] += 1; turns_sum += 2; turns_n += 1
                 elif r2["action"] == "resolve" and exp == "AMBIG":
-                    by_type[kind]["misroute"] += 1; m["misroute"] += 1   # dept couldn't split -> wrong pick
+                    m["misroute"] += 1; bt[kind]["misroute"] += 1
                 elif exp == "AMBIG":
-                    by_type[kind]["needs_finer_key"] += 1
+                    bt[kind]["needs_finer_key"] += 1
                 else:
-                    by_type[kind]["refine_miss"] += 1
+                    bt[kind]["refine_miss"] += 1
             else:
-                by_type[kind]["miss"] += 1
+                bt[kind]["miss"] += 1
 
         elif kind == "misheard":
             cands = {x["ext"] for x in res.get("candidates", [])} | ({got} if got else set())
             if a == "resolve" and got == exp:
-                by_type[kind]["ok"] += 1; turns_sum += 1; turns_n += 1
-            elif a == "resolve":                    # resolved to a DIFFERENT person
-                m["misroute"] += 1; by_type[kind]["misroute"] += 1
+                bt[kind]["ok"] += 1; turns_sum += 1; turns_n += 1
+            elif a == "resolve":
+                m["misroute"] += 1; bt[kind]["misroute"] += 1
+            elif a == "confirm":
+                if confirm_yes(res, exp): bt[kind]["ok"] += 1; turns_sum += 2; turns_n += 1
+                else: bt[kind]["safe_decline"] += 1   # offered wrong person, caller declines -> no misroute
             elif exp in cands:
-                by_type[kind]["clarify_has_src"] += 1
+                bt[kind]["clarify_has_src"] += 1
             else:
-                by_type[kind]["lost"] += 1
+                bt[kind]["lost"] += 1
 
         elif kind == "not_found":
             if a == "not_found":
-                by_type[kind]["ok"] += 1
+                bt[kind]["ok"] += 1
             elif a == "resolve":
-                m["misroute"] += 1; by_type[kind]["false_accept"] += 1
+                m["misroute"] += 1; bt[kind]["false_accept"] += 1
+            elif a == "confirm":                      # absent -> caller declines -> correctly rejected
+                bt[kind]["ok"] += 1
             else:
-                by_type[kind]["overclarify"] += 1
+                bt[kind]["overclarify"] += 1
 
     latency = (time.perf_counter() - t0) / n_resolves * 1000
     total = len(cases)
     return {
-        "tier": tier, "n": total,
+        "tier": tier, "mode": "scaled" if scaled else "legacy", "n": total,
         "misroute_%": m["misroute"] / total * 100,
-        "uniq_resolve_%": by_type["unique"]["ok"] / max(by_type["unique"]["n"], 1) * 100,
-        "overclarify_%": by_type["unique"]["overclarify"] / max(by_type["unique"]["n"], 1) * 100,
-        "disambig_%": by_type["collision"]["disambig_ok"] / max(by_type["collision"]["n"], 1) * 100,
-        "needs_finer_%": by_type["collision"]["needs_finer_key"] / max(by_type["collision"]["n"], 1) * 100,
-        "notfound_rej_%": by_type["not_found"]["ok"] / max(by_type["not_found"]["n"], 1) * 100,
-        "misheard_ok_%": (by_type["misheard"]["ok"] + by_type["misheard"]["clarify_has_src"]) / max(by_type["misheard"]["n"], 1) * 100,
+        "uniq_resolve_%": bt["unique"]["ok"] / max(bt["unique"]["n"], 1) * 100,
+        "overclarify_%": bt["unique"]["overclarify"] / max(bt["unique"]["n"], 1) * 100,
+        "disambig_%": bt["collision"]["disambig_ok"] / max(bt["collision"]["n"], 1) * 100,
+        "notfound_rej_%": bt["not_found"]["ok"] / max(bt["not_found"]["n"], 1) * 100,
+        "misheard_ok_%": (bt["misheard"]["ok"] + bt["misheard"]["clarify_has_src"]) / max(bt["misheard"]["n"], 1) * 100,
         "turns": turns_sum / max(turns_n, 1),
         "ms": latency,
     }
@@ -161,21 +171,20 @@ def main():
     tiers = [("200", "data/directory_200.csv"),
              ("2000", "data/directory_2000.csv"),
              ("20000", "data/directory_20000.csv")]
-    rows = [evaluate(t, p) for t, p in tiers]
-    cols = ["tier", "n", "misroute_%", "uniq_resolve_%", "overclarify_%",
-            "disambig_%", "needs_finer_%", "notfound_rej_%", "misheard_ok_%", "turns", "ms"]
-    w = {c: max(len(c), 7) for c in cols}
+    cols = ["tier", "mode", "misroute_%", "uniq_resolve_%", "overclarify_%",
+            "disambig_%", "notfound_rej_%", "misheard_ok_%", "turns", "ms"]
+    w = {c: max(len(c), 6) for c in cols}
     print(" | ".join(c.rjust(w[c]) for c in cols))
     print("-+-".join("-" * w[c] for c in cols))
-    for r in rows:
-        cells = []
-        for c in cols:
-            v = r[c]
-            cells.append((f"{v:.1f}" if isinstance(v, float) else str(v)).rjust(w[c]))
-        print(" | ".join(cells))
+    for t, p in tiers:
+        for scaled in (False, True):
+            r = evaluate(t, p, scaled=scaled)
+            cells = [(f"{r[c]:.1f}" if isinstance(r[c], float) else str(r[c])).rjust(w[c]) for c in cols]
+            print(" | ".join(cells))
+        print("-+-".join("-" * w[c] for c in cols))
     print("\nMISROUTE = caller connected to the WRONG person (cardinal safety metric).")
-    print("disambig_% = collisions resolved after a department refine; needs_finer_% = "
-          "department couldn't split the cluster (needs floor/team — the 20k problem).")
+    print("scaled mode adds: unique-exact -> resolve (no over-clarify); homonyms -> clarify;")
+    print("strong non-exact -> CONFIRM (silent misroute -> safe 1-turn check; absent name -> rejectable).")
 
 
 if __name__ == "__main__":
