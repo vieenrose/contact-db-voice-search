@@ -120,20 +120,33 @@ class Resolver:
             return s
         return 0.0
 
-    def rank(self, query: str, k: int = 5):
+    def _pool(self, filters):
+        """Optional faceted narrowing (e.g. {"department": "Sales"}) — used by the agent
+        to FINISH a disambiguation once the caller supplies a distinguishing attribute.
+        No filters -> the full directory (unchanged behaviour)."""
+        if not filters:
+            return self.contacts
+        dept = (filters.get("department") or "").strip().lower()
+        pool = self.contacts
+        if dept:
+            pool = [c for c in pool if c.dept.lower() == dept]
+        return pool
+
+    def rank(self, query: str, k: int = 5, filters=None):
         q = query.strip()
         q_zh = "".join(CJK.findall(q))
         q_zh = ZH_HON.sub("", q) if not q_zh else q_zh
         q_zh = "".join(CJK.findall(q_zh))
         q_en = _norm_en(q) if re.search(r"[A-Za-z]", q) else ""
         q_pin = _to_pinyin(q_zh) if q_zh else ""
-        scored = [(self._score(q_en, q_zh, q_pin, c), c) for c in self.contacts]
+        scored = [(self._score(q_en, q_zh, q_pin, c), c) for c in self._pool(filters)]
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored[:k]
 
-    def resolve(self, query: str) -> dict:
-        """Return an action dict the controller can act on."""
-        ranked = self.rank(query)
+    def resolve(self, query: str, filters=None) -> dict:
+        """Return an action dict the controller can act on. `filters` narrows the search
+        by a caller-supplied attribute (department) to resolve same-name collisions."""
+        ranked = self.rank(query, filters=filters)
         if not ranked:
             return {"action": "not_found", "query": query}
         top, c = ranked[0]
