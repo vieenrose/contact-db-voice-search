@@ -10,7 +10,7 @@ audio turn). DB is external; nothing is baked into the model.
 Used both interactively (an audio turn at a time) and by eval (run a test clip ->
 final routed action) — reusing the same loop.
 """
-import json, re, sys
+import json, sys
 from pathlib import Path
 
 import torch
@@ -22,13 +22,7 @@ from build_qwen import build_model, build_processor
 from train_qwen_agent import SYS, build_messages   # reuse the exact training format
 from train_qwen import load_wav_16k, ASR_SR
 from resolver import Resolver
-
-TOOL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
-
-
-def topn(res):
-    return ([{"name": res["name"], "ext": res["ext"], "dept": res.get("dept"), "score": res.get("score")}]
-            if res["action"] == "resolve" else res.get("candidates", []))
+from tools import parse_tool_calls, format_matches   # the LiveKit-style tool layer (single source of truth)
 
 
 class Agent:
@@ -53,20 +47,20 @@ class Agent:
         last_action = None
         for _ in range(self.max_tool_hops):
             gen = self._gen(msgs, audios)
-            m = TOOL_RE.search(gen)
-            if not m:                                   # plain reply -> turn complete
+            calls = parse_tool_calls(gen)               # shared LiveKit-style parser
+            if not calls:                               # plain reply -> turn complete
                 msgs.append({"role": "assistant", "content": [{"type": "text", "text": gen}]})
                 return gen, last_action, msgs
             # tool-call: run the resolver against the live DB, feed the response back
-            try:
-                query = json.loads(m.group(1)).get("arguments", {}).get("query", "")
-            except Exception:
-                query = ""
+            call = calls[0]
+            query = (call.get("arguments") or {}).get("query", "")
             res = self.R.resolve(query)
             last_action = res
-            msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"<tool_call>{m.group(1)}</tool_call>"}]})
+            tc = json.dumps({"name": call.get("name", "search_contacts"),
+                             "arguments": call.get("arguments", {})}, ensure_ascii=False)
+            msgs.append({"role": "assistant", "content": [{"type": "text", "text": f"<tool_call>{tc}</tool_call>"}]})
             msgs.append({"role": "tool", "content": [{"type": "text",
-                         "text": f"<tool_response>{json.dumps(topn(res), ensure_ascii=False)}</tool_response>"}]})
+                         "text": f"<tool_response>{json.dumps(format_matches(res), ensure_ascii=False)}</tool_response>"}]})
         return "(too many tool hops)", last_action, msgs
 
 
