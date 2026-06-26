@@ -36,6 +36,8 @@ _gcu._json_schema_to_python_type = _safe_js2pt
 R = Resolver("directory.csv")
 N = len(R.contacts)
 TOOL_SCHEMA_JSON = json.dumps(registry.schemas(), indent=2, ensure_ascii=False)
+DIRECTORY_DF = pd.DataFrame([{"name": c.name, "中文名": c.zh, "dept": c.dept, "ext": c.ext}
+                             for c in R.contacts])
 
 # Optional CPU transcription. Lazy + guarded so text input always works.
 _asr = None
@@ -110,11 +112,7 @@ def search(audio, typed):
         heard = transcribe(sr, wav)
         query = extract_name(heard)
     else:
-        yield "Type a name or record a request.", "", pd.DataFrame(), pd.DataFrame(), ""
-        return
-
-    yield (f"### 🗣️ heard: **{heard}**\n**query →** `{query}`",
-           f"🔍 calling `search_contacts` over **{N}** contacts…", pd.DataFrame(), pd.DataFrame(), "")
+        return "Type a name or record a request.", "", pd.DataFrame(), pd.DataFrame(), ""
 
     # 2) the LiveKit-style loop — REAL tool layer: the model emits a Hermes tool call,
     #    tools.py parses it and dispatches it against the live directory.
@@ -131,8 +129,8 @@ def search(audio, typed):
     plot_df = pd.DataFrame({"contact": [r["name"] for r in rows], "score": [r["score"] for r in rows]})
     _, card = compose_reply(matches)
 
-    yield (f"### 🗣️ heard: **{heard}**\n**query →** `{query}`",
-           trace_md(query, tool_call_obj, matches), df, plot_df, card)
+    return (f"### 🗣️ heard: **{heard}**\n**query →** `{query}`",
+            trace_md(query, tool_call_obj, matches), df, plot_df, card)
 
 
 EXAMPLES = [[None, "蔡孟儒"], [None, "Coco Kuo"], [None, "周宜蓁"],
@@ -152,9 +150,12 @@ with gr.Blocks(title="Taiwan Attendant — LiveKit-style tool calling") as demo:
     with gr.Row():
         with gr.Column(scale=1):
             audio_in = gr.Audio(sources=["microphone"], type="numpy", label="🎙️ Speak a request")
-            text_in = gr.Textbox(label="…or type a name", placeholder="蔡孟儒 / Kevin Chen / Tseng / David Miller")
+            text_in = gr.Textbox(value="蔡孟儒", label="…or type a name",
+                                 placeholder="蔡孟儒 / Kevin Chen / Tseng / David Miller")
             btn = gr.Button("🔍 Run agent turn", variant="primary")
             gr.Examples(EXAMPLES, inputs=[audio_in, text_in], label="Try these")
+            with gr.Accordion(f"📇 The live directory — {N} contacts (edit the CSV, no retraining)", open=False):
+                gr.Dataframe(DIRECTORY_DF, label=None, interactive=False, max_height=320)
             with gr.Accordion("🔧 Registered tools (LiveKit-style schema)", open=False):
                 gr.Markdown("Auto-derived from each Python function's signature — the same OpenAI "
                             "tool schema LiveKit builds for `@function_tool`:")
@@ -165,7 +166,11 @@ with gr.Blocks(title="Taiwan Attendant — LiveKit-style tool calling") as demo:
             cand_df = gr.Dataframe(label="DB candidates (ranked by distance score)", interactive=False)
             score_plot = gr.BarPlot(x="contact", y="score", title="match score", y_lim=[0, 100], height=200)
             result_md = gr.Markdown()
-    btn.click(search, [audio_in, text_in], [heard_md, trace, cand_df, score_plot, result_md])
+    outputs = [heard_md, trace, cand_df, score_plot, result_md]
+    btn.click(search, [audio_in, text_in], outputs, api_name="search")
+    text_in.submit(search, [audio_in, text_in], outputs)
+    demo.load(search, [audio_in, text_in], outputs)   # populate a result on page load (DB is live)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", ssr_mode=False, show_api=False)
+    demo.queue(default_concurrency_limit=4)
+    demo.launch(server_name="0.0.0.0", ssr_mode=False, show_error=True)
