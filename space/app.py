@@ -22,6 +22,17 @@ from scipy.signal import resample_poly
 from resolver import Resolver
 from tools import registry, parse_tool_calls
 
+# Gradio 5.9.x get_api_info() (run at launch even with show_api=False) crashes on boolean
+# JSON schemas -> "TypeError: argument of type 'bool' is not iterable", which cascades into
+# a "localhost not accessible" launch failure. Guard the recursion against bool schemas.
+import gradio_client.utils as _gcu
+_orig_js2pt = _gcu._json_schema_to_python_type
+def _safe_js2pt(schema, defs=None):
+    if isinstance(schema, bool):
+        return "Any"
+    return _orig_js2pt(schema, defs)
+_gcu._json_schema_to_python_type = _safe_js2pt
+
 R = Resolver("directory.csv")
 N = len(R.contacts)
 TOOL_SCHEMA_JSON = json.dumps(registry.schemas(), indent=2, ensure_ascii=False)
