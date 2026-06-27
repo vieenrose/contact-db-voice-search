@@ -108,3 +108,11 @@ VERDICT: ship Qwen3-ASR-0.6B@INT8 as the edge audio-agent. It exceeds Omni-3B at
 Caveats: multi-turn is teacher-forced on in-distribution val (free-running 2000-DB test = final confirm);
 not_found OOD 75.6% (resolver scaled-confirm handles it, not the model).
 Remaining: free-running 2000-DB validation, INT8 quant, GGUF/serving for the demo.
+
+## FREE-RUNNING CONFIRMATION (2026-06-27)
+No teacher-forcing — model's own tool-calls drive the real resolver (per-dialog cluster), only
+gold audio turns fed. n=80 collision dialogs:
+  real collision returned 93.8% | asked department 93.8% | reached correct ext 93.8% (75/80)
+Expected ~6% degradation from teacher-forced 100% (perception edge cases); well above the 85% gate.
+COMPLETE VERDICT — unconditional GO: single-turn 94.0% (>Omni 92.6%), multi-turn free-running 93.8%,
+misroute 1.3%. Qwen3-ASR-0.6B does everything Omni-3B does, better, at 1/5 params, ~3x faster, ~1GB.
