@@ -116,3 +116,10 @@ gold audio turns fed. n=80 collision dialogs:
 Expected ~6% degradation from teacher-forced 100% (perception edge cases); well above the 85% gate.
 COMPLETE VERDICT — unconditional GO: single-turn 94.0% (>Omni 92.6%), multi-turn free-running 93.8%,
 misroute 1.3%. Qwen3-ASR-0.6B does everything Omni-3B does, better, at 1/5 params, ~3x faster, ~1GB.
+
+## SHIPPED (2026-06-27)
+- Published: **Luigi/Qwen3-ASR-0.6B-Agent** (LoRA adapter + model card, Apache-2.0).
+- CPU latency: **~4 s/turn at 2 threads** (vs Omni-3B's 84-129 s) — measured on real utterances.
+- INT8 (decoder 8-bit, encoder fp16): sanity-confirmed (correct tool calls) — research-backed deploy config.
+- Live demo: space-qwen3asr/ (FastAPI + transformers, in-process, ~4 s) deployed to the
+  Luigi/contact-attendant-omni Space, replacing the slow llama.cpp Omni demo.
