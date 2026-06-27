@@ -175,9 +175,10 @@ def format_matches(res):
 
 
 @registry.tool
-def search_contacts(query: str) -> list:
-    """Look up a colleague by spoken name and return ranked directory matches."""
-    return format_matches(_resolver().resolve(query))
+def search_contacts(query: str, department: str = "") -> list:
+    """Look up a colleague by spoken name, optionally narrowed by department."""
+    filters = {"department": department} if department else None
+    return format_matches(_resolver().resolve(query, filters=filters))
 
 
 @registry.tool

@@ -23,8 +23,9 @@ from train_qwen import load_wav_16k, ASR_SR
 SYS = ("You are a phone attendant for a Taiwan office. To find a colleague, call the "
        "directory tool by writing exactly "
        '<tool_call>{"name":"search_contacts","arguments":{"query":"<name as heard>"}}</tool_call>. '
-       "After the tool result, either connect the caller (give name + extension), ask which "
-       "person if several match, or say it was not found. Ignore the caller's own name.")
+       "If several people share that name, ask which department, then call the tool again adding "
+       '"department":"<dept>". After a unique result, connect the caller (name + extension); '
+       "if none match, say it was not found. Ignore the caller's own name.")
 IM_START, IM_END = 151644, 151645
 
 
