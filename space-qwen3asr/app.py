@@ -66,28 +66,34 @@ def to_wav(data: bytes, suffix: str) -> str:
     return wav
 
 
-def model_toolcall(wav):
+def _gen(prompt, wavs, n):
     proc, model = M["proc"], M["model"]
-    text = (f"<|im_start|>system\n{SYS}<|im_end|>\n<|im_start|>user\n<|audio_pad|><|im_end|>\n"
-            f"<|im_start|>assistant\n")
-    enc = proc(text=text, audio=[load_wav_16k(wav)], sampling_rate=16000, return_tensors="pt")
+    enc = proc(text=prompt, audio=wavs, sampling_rate=16000, return_tensors="pt")
     with torch.no_grad():
-        out = model.generate(**enc, max_new_tokens=48, do_sample=False, eos_token_id=151645)
+        out = model.generate(**enc, max_new_tokens=n, do_sample=False, eos_token_id=151645)
     return proc.tokenizer.decode(out[0][enc["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 
 
-def compose(matches):
-    if len(matches) == 1:
-        m = matches[0]
-        return {"kind": "resolve", "title": "✅ Located",
-                "detail": f"{m['name']} · extension {m['ext']} · {m.get('dept','')}",
-                "say": f"Connecting you to {m['name']}, extension {m['ext']}."}
-    if len(matches) >= 2:
-        ns = ", ".join(m["name"] for m in matches[:3])
-        return {"kind": "clarify", "title": "🤔 Needs clarification",
-                "detail": f"Several matches: {ns}", "say": f"I found several — {ns}. Which one?"}
-    return {"kind": "not_found", "title": "🚫 Not found", "detail": "No confident match.",
-            "say": "Sorry, I couldn't find that name in the directory."}
+def run_agent(wav):
+    """Two-turn agent loop, all done by the 0.6B model: hear -> tool_call -> (resolver) ->
+    tool_response -> the model SPEAKS the reply back in the caller's own language (zh-TW / en)."""
+    w = load_wav_16k(wav)
+    p1 = (f"<|im_start|>system\n{SYS}<|im_end|>\n<|im_start|>user\n<|audio_pad|><|im_end|>\n"
+          f"<|im_start|>assistant\n")
+    tc_raw = _gen(p1, [w], 48)                       # turn 1: audio -> tool call
+    calls = parse_tool_calls(tc_raw)
+    if not calls:
+        return {"calls": [], "raw": tc_raw}
+    args = calls[0].get("arguments") or {}
+    query, dept = args.get("query", ""), args.get("department", "")
+    td = {"query": query, "department": dept} if dept else {"query": query}
+    matches = registry.dispatch("search_contacts", td)
+    tr = json.dumps(matches, ensure_ascii=False)
+    p2 = (p1 + tc_raw + "<|im_end|>\n<|im_start|>tool\n<tool_response>" + tr +
+          "</tool_response><|im_end|>\n<|im_start|>assistant\n")
+    say = _gen(p2, [w], 80)                          # turn 2: tool response -> spoken reply (model)
+    kind = "resolve" if len(matches) == 1 else ("clarify" if matches else "not_found")
+    return {"calls": calls, "query": query, "dept": dept, "matches": matches, "say": say, "kind": kind}
 
 
 @app.post("/listen")
@@ -95,18 +101,19 @@ async def listen(audio: UploadFile = File(...)):
     t0 = time.time()
     data = await audio.read()
     ext = "." + (audio.filename.rsplit(".", 1)[-1] if "." in (audio.filename or "") else "webm")
-    raw = model_toolcall(to_wav(data, ext))
-    calls = parse_tool_calls(raw)
+    res = run_agent(to_wav(data, ext))
     secs = round(time.time() - t0, 1)
-    if not calls:
-        return {"empty": True, "raw": raw[:300], "secs": secs}
-    query = (calls[0].get("arguments") or {}).get("query", "")
-    matches = registry.dispatch("search_contacts", {"query": query})
+    if not res["calls"]:
+        return {"empty": True, "raw": res.get("raw", "")[:300], "secs": secs}
+    query = res["query"]
     ranked = R.rank(query, k=6)
     cands = [{"rank": i + 1, "name": c.name, "zh": c.zh, "dept": c.dept, "ext": c.ext, "score": round(s, 1)}
              for i, (s, c) in enumerate(ranked)]
-    return {"empty": False, "query": query, "tool_call": calls[0], "tool_response": matches,
-            "candidates": cands, "decision": compose(matches), "secs": secs}
+    title = {"resolve": "✅ Located", "clarify": "🤔 Needs clarification",
+             "not_found": "🚫 Not found"}[res["kind"]]
+    return {"empty": False, "query": query, "tool_call": res["calls"][0], "tool_response": res["matches"],
+            "candidates": cands,
+            "decision": {"kind": res["kind"], "title": title, "say": res["say"]}, "secs": secs}
 
 
 @app.get("/health")
@@ -145,14 +152,16 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="sub">Speak a request (zh-TW or English). <b>Qwen3-ASR-0.6B-Agent</b> (our fine-tune — a
  0.6B that beats Omni-3B) runs <b>in transformers on CPU</b>: it <b>hears the name</b> → emits a
  <code>search_contacts</code> tool call → <code>tools.py</code> grounds it against the live directory
- (<b>__N__ contacts</b>) → connects / clarifies / rejects. <b>~5-10 s/turn</b> (vs the 3B's ~90 s).</div>
+ (<b>__N__ contacts</b>) → then the model <b>speaks the reply back in the caller's own language</b>
+ (zh-TW for Chinese callers, English for English). Conversation <i>and</i> tool use in one 0.6B model.
+ Two model passes on CPU, <b>~10-20 s</b> total.</div>
 <button id="rec" onclick="toggle()">🎙️ Start recording</button>
 <div class="status" id="status">Tip: “可以幫我接蔡孟儒嗎” or “I'd like to reach Coco Kuo”.</div>
 <div id="out" style="display:none">
  <div class="card"><h3>🔁 Tool-calling trace</h3>
   <div class="step">1 · 🎙️ you → 🤖 Qwen3-ASR-0.6B-Agent → tool call</div><pre id="tc"></pre>
   <div class="step">2 · 🔧 search_contacts → tool response</div><pre id="tr"></pre>
-  <div class="step">3 · 🤖 reply</div><div id="decision" class="decision"></div><div id="say" class="say"></div></div>
+  <div class="step">3 · 🗣️ model speaks back — <i>in the caller's own language</i></div><div id="decision" class="decision"></div><div id="say" class="say"></div></div>
  <div class="card"><h3>DB candidates (ranked)</h3>
   <table><thead><tr><th>#</th><th>name</th><th>中文名</th><th>dept</th><th>ext</th><th>score</th></tr></thead>
   <tbody id="cands"></tbody></table></div>
@@ -175,7 +184,7 @@ async function submit(){
  st('✅ done in '+d.secs+'s');document.getElementById('out').style.display='block';
  document.getElementById('tc').textContent=JSON.stringify(d.tool_call);
  document.getElementById('tr').textContent=JSON.stringify(d.tool_response);
- const dc=document.getElementById('decision');dc.className='decision '+d.decision.kind;dc.innerHTML='<b>'+d.decision.title+'</b> — '+d.decision.detail;
+ const dc=document.getElementById('decision');dc.className='decision '+d.decision.kind;dc.innerHTML='<b>'+d.decision.title+'</b>';
  document.getElementById('say').textContent='“'+d.decision.say+'”';
  document.getElementById('cands').innerHTML=d.candidates.map(c=>'<tr class="'+(c.rank===1&&d.decision.kind!=='not_found'?'top':'')+'"><td>'+c.rank+'</td><td>'+c.name+'</td><td>'+c.zh+'</td><td>'+c.dept+'</td><td>'+c.ext+'</td><td>'+c.score+'</td></tr>').join('');}
 function rs(){const b=document.getElementById('rec');b.disabled=false;b.textContent='🎙️ Start recording';}

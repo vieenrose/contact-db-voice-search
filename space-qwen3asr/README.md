@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: 0.6B speech agent that beats Omni-3B; ~5s/turn on CPU
+short_description: "0.6B speech agent: tools + zh-TW/en reply, beats Omni-3B"
 ---
 
 # ☎️ Qwen3-ASR-0.6B-Agent — voice attendant (audio, on CPU)
@@ -24,7 +24,12 @@ edge-feasible "Qwen3-Omni-0.6B" that doesn't otherwise exist.
 1. Browser records audio → `POST /listen`
 2. Qwen3-ASR-0.6B-Agent (frozen AuT encoder + LoRA decoder) → `<tool_call>{"name":"search_contacts",...}</tool_call>`
 3. `tools.py` parses + dispatches the call against the directory → ranked matches
-4. The reply (connect / clarify / not-found) is shown with the tool-call trace
+4. The matches are fed back as a `<tool_response>` and **the model speaks the reply itself** —
+   in the caller's own language (zh-TW for Chinese callers, English for English ones)
 
-Models pulled at startup: `Qwen/Qwen3-ASR-0.6B` (base) + `Luigi/Qwen3-ASR-0.6B-Agent` (our LoRA).
+So it's **conversation *and* tool use in one 0.6B model**: each turn it decides between a tool call and
+a natural-language reply. Two model passes on CPU, ~10–20 s total.
+
+Models pulled at startup: `Qwen/Qwen3-ASR-0.6B` (base) + `Luigi/Qwen3-ASR-0.6B-Agent` (our LoRA, the
+language-mirroring `main` revision). The English-only original is at revision `v1-english-replies`.
 Apache-2.0. Not affiliated with Alibaba/Qwen.
