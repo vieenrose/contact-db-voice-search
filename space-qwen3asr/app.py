@@ -254,7 +254,9 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
  :root{color-scheme:light dark} *{box-sizing:border-box}
  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:24px;background:#fafafa;color:#1c1c1f}
- h1{font-size:1.3rem;margin:0 0 4px} .sub{color:#555;font-size:.92rem;margin-bottom:16px}
+ h1{font-size:1.3rem;margin:0 0 4px} .sub{color:#555;font-size:.95rem;margin-bottom:10px}
+ .flow{margin:6px 0 12px;padding-left:22px;font-size:.92rem;color:#444;line-height:1.75}
+ .flow li{margin:3px 0} .muted{color:#888;font-size:.86rem} .tagline{color:#555;font-size:.9rem;margin-bottom:16px}
  button{padding:12px 20px;font-size:1rem;border:0;border-radius:10px;background:#3b5bdb;color:#fff;cursor:pointer}
  button.rec{background:#b42318} button:disabled{opacity:.5}
  .status{margin:12px 0;font-size:.95rem;min-height:1.4em}
@@ -268,15 +270,16 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
  .say{font-style:italic;color:#333;border-left:3px solid #c7c7c7;padding-left:10px;margin-top:6px}
  .spinner{display:inline-block;width:14px;height:14px;border:2px solid #ccc;border-top-color:#3b5bdb;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px}
  @keyframes spin{to{transform:rotate(360deg)}}
- @media(prefers-color-scheme:dark){body{background:#0f0f11;color:#e7e7ea}.sub,th{color:#a0a0a8}.card{background:#17171a;border-color:#2a2a2e}tr.top td{background:#1e2547}th,td{border-color:#26262b}.say{color:#cfcfd4}}
+ @media(prefers-color-scheme:dark){body{background:#0f0f11;color:#e7e7ea}.sub,.flow,.tagline,th{color:#b8b8c0}.muted{color:#888}.card{background:#17171a;border-color:#2a2a2e}tr.top td{background:#1e2547}th,td{border-color:#26262b}.say{color:#cfcfd4}}
 </style></head><body>
 <h1>☎️ Qwen3-ASR-0.6B-Agent — voice attendant</h1>
-<div class="sub">Speak a request (zh-TW or English). <b>Qwen3-ASR-0.6B-Agent</b> (our fine-tune — a
- 0.6B that beats Omni-3B) runs <b>in transformers on CPU</b>: it <b>hears the name</b> → emits a
- <code>search_contacts</code> tool call → <code>tools.py</code> grounds it against the live directory
- (<b>__N__ contacts</b>) → composes the reply <b>in the caller's own language</b> (zh-TW for Chinese
- callers, English for English) → and <b><a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> speaks it aloud</b>.
- Speech-in, tool use, <i>and</i> speech-out — all from tiny on-device models. CPU only, <b>~10-20 s</b>.</div>
+<div class="sub">Say a colleague's name — in <b>Chinese or English</b> — and the attendant finds their extension.</div>
+<ol class="flow">
+ <li>🎙️ <b>Qwen3-ASR-0.6B-Agent</b> hears you and calls a directory tool <span class="muted">— a 0.6B that beats Omni-3B</span></li>
+ <li>🔍 the tool looks up the name in the live directory <span class="muted">— __N__ contacts</span></li>
+ <li>🗣️ the model replies <b>in your language</b>, and <a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> <b>speaks it aloud</b></li>
+</ol>
+<div class="tagline">Speech in → tool use → speech out — three tiny on-device models, CPU only, ~10–20 s per turn.</div>
 <button id="rec" onclick="toggle()">🎙️ Start recording</button>
 <div class="status" id="status">Tip: “可以幫我接蔡孟儒嗎” or “I'd like to reach Coco Kuo”.</div>
 <div id="out" style="display:none">
