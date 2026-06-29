@@ -44,6 +44,10 @@ def _load():
     base = Qwen3ASRForConditionalGeneration.from_pretrained(BASE_ID, dtype=torch.float32)
     M["model"] = PeftModel.from_pretrained(base.thinker.eval(), ADAPTER).eval()
     print("Qwen3-ASR-0.6B-Agent ready", flush=True)
+    try:                                     # give the attendant a voice (non-fatal if it fails)
+        _load_tts()
+    except Exception as e:
+        print("PrimeTTS load failed (text-only fallback):", e, flush=True)
 
 
 def load_wav_16k(path):
@@ -64,6 +68,115 @@ def to_wav(data: bytes, suffix: str) -> str:
     subprocess.run(["ffmpeg", "-y", "-i", src.name, "-ar", "16000", "-ac", "1", wav],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     return wav
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PrimeTTS (Luigi/PrimeTTS) — gives the attendant a VOICE. The model writes the reply
+# (in the caller's language); PrimeTTS speaks it. Tiny FastSpeech+Snake-HiFiGAN, ONNX,
+# CPU-only, zh-TW + English single voice. Pipeline: text -> bopomofo/arpabet frontend ->
+# encoder.onnx -> numpy length-regulate -> decoder.onnx -> vocoder.onnx -> wav.
+# ──────────────────────────────────────────────────────────────────────────────
+import re as _re
+
+TTS_REPO = os.environ.get("PRIMETTS_REPO", "Luigi/PrimeTTS")
+TTS = {}                                      # filled lazily / at startup
+_TTS_BN = ["frames", "frame_meta", "local_ctx_raw", "abs_pos", "pitch_frame", "frame_mask"]
+_TTS_SPLIT = _re.compile(r'(?<=[。！？；;!?\n,，、])')   # split AFTER punctuation, keep delimiter
+
+
+def _tts_regulate(cond, dur, pitch, abs_bins, max_frames):
+    import numpy as np
+    c = cond[0]; d = dur[0].astype(np.int64); d[d < 0] = 0
+    T, H = c.shape
+    frames = np.repeat(c, d, axis=0); Fn = frames.shape[0]
+    tok = np.repeat(np.arange(T), d); starts = np.cumsum(d) - d
+    within = np.arange(Fn) - starts[tok]; dpf = d[tok].astype(np.float32)
+    rel = (within / np.maximum(dpf - 1, 1)).astype(np.float32)
+    tc = max(1, int((d > 0).sum())); token_pos = (tok / max(1, tc - 1)).astype(np.float32)
+    ld = (np.log1p(dpf) / 6.0).astype(np.float32); center = 1.0 - np.abs(rel * 2 - 1)
+    fm = np.stack([rel, 1 - rel, center, np.sin(rel*np.pi), np.cos(rel*np.pi), token_pos, ld, dpf/40.0], -1).astype(np.float32)
+    prev = np.concatenate([c[:1], c[:-1]], 0); nxt = np.concatenate([c[1:], c[-1:]], 0)
+    lc = np.repeat(np.concatenate([prev, c, nxt], -1), d, axis=0).astype(np.float32)
+    pos = np.arange(Fn); ap = np.minimum(pos*abs_bins//max(1, max_frames), abs_bins-1).astype(np.int64)
+    pf = np.repeat(pitch[0], d, axis=0).astype(np.float32)
+    return {"frames": frames[None].astype(np.float32), "frame_meta": fm[None], "local_ctx_raw": lc[None],
+            "abs_pos": ap[None].astype(np.int64), "pitch_frame": pf[None], "frame_mask": np.ones((1, Fn), bool)}
+
+
+def _load_tts():
+    if TTS:
+        return TTS
+    import onnxruntime as ort
+    from huggingface_hub import hf_hub_download
+    import frontend_bopomofo as F
+    w = lambda fn: hf_hub_download(TTS_REPO, fn)
+    meta = json.load(open(w("meta.json")))
+    nth = int(os.environ.get("TORCH_THREADS", "2"))
+
+    def _sess(p):
+        so = ort.SessionOptions(); so.intra_op_num_threads = nth; so.inter_op_num_threads = 1
+        return ort.InferenceSession(p, so, providers=["CPUExecutionProvider"])
+
+    F.text_to_ids("您好")                      # warm the frontend (pulls the g2pw model once)
+    TTS.update(F=F, sr=meta["sample_rate"], abs_bins=meta["abs_frame_bins"], max_frames=meta["max_frames"],
+               enc=_sess(w("acoustic_encoder.onnx")), dec=_sess(w("acoustic_decoder.onnx")), voc=_sess(w("vocoder.onnx")))
+    print("PrimeTTS ready", flush=True)
+    return TTS
+
+
+def synth_reply(text):
+    """Reply text -> (float32 wav, sr). Chunk at punctuation under a frame budget (the acoustic
+    model's absolute positional code saturates past max_frames, garbling long single passes)."""
+    import numpy as np
+    eng = _load_tts()
+    spk = np.array([0], np.int64)
+
+    def enc(t):
+        o = eng["F"].text_to_ids(t)
+        if not o["phone_ids"]:
+            return None
+        ph = np.array([o["phone_ids"]], np.int64); tn = np.array([o["tone_ids"]], np.int64)
+        lg = np.array([o["lang_ids"]], np.int64)
+        return eng["enc"].run(None, {"phone": ph, "tone": tn, "lang": lg, "speaker": spk})
+
+    budget = int(eng["max_frames"] * 0.8)
+    clauses = [c for c in _TTS_SPLIT.split(text) if c.strip()] or [text]
+    chunks, cur, cur_f = [], "", 0
+    for cl in clauses:
+        e = enc(cl); f = int(e[1].sum()) if e else 0
+        if cur and cur_f + f > budget:
+            chunks.append(cur); cur, cur_f = "", 0
+        cur += cl; cur_f += f
+        if cur_f > budget and cur == cl:
+            chunks.append(cur); cur, cur_f = "", 0
+    if cur:
+        chunks.append(cur)
+    gap = np.zeros(int(eng["sr"] * 0.07), np.float32)
+    wavs = []
+    for i, c in enumerate(chunks):
+        e = enc(c)
+        if e is None:
+            continue
+        cond, dur, pitch = e
+        feeds = _tts_regulate(cond, dur, pitch, eng["abs_bins"], eng["max_frames"])
+        mel = eng["dec"].run(None, {n: feeds[n] for n in _TTS_BN})[0]
+        wavs.append(eng["voc"].run(None, {"mel": mel.astype(np.float32)})[0].reshape(-1))
+        if i < len(chunks) - 1:
+            wavs.append(gap)
+    if not wavs:
+        return None, eng["sr"]
+    wav = np.concatenate(wavs)
+    peak = float(np.max(np.abs(wav)))
+    if peak > 1e-6:
+        wav = wav * (0.97 / peak)
+    return wav.astype(np.float32), eng["sr"]
+
+
+def wav_to_b64(wav, sr):
+    import io, base64, soundfile as sf
+    buf = io.BytesIO()
+    sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _gen(prompt, wavs, n):
@@ -111,9 +224,18 @@ async def listen(audio: UploadFile = File(...)):
              for i, (s, c) in enumerate(ranked)]
     title = {"resolve": "✅ Located", "clarify": "🤔 Needs clarification",
              "not_found": "🚫 Not found"}[res["kind"]]
+    tts_b64 = tts_sr = None                          # speak the reply with PrimeTTS (non-fatal)
+    try:
+        wav, sr = synth_reply(res["say"])
+        if wav is not None and len(wav):
+            tts_b64, tts_sr = wav_to_b64(wav, sr), sr
+    except Exception as e:
+        print("TTS synth failed:", e, flush=True)
+    secs = round(time.time() - t0, 1)               # include synth time in the reported latency
     return {"empty": False, "query": query, "tool_call": res["calls"][0], "tool_response": res["matches"],
             "candidates": cands,
-            "decision": {"kind": res["kind"], "title": title, "say": res["say"]}, "secs": secs}
+            "decision": {"kind": res["kind"], "title": title, "say": res["say"]},
+            "tts_audio": tts_b64, "tts_sr": tts_sr, "secs": secs}
 
 
 @app.get("/health")
@@ -152,16 +274,18 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="sub">Speak a request (zh-TW or English). <b>Qwen3-ASR-0.6B-Agent</b> (our fine-tune — a
  0.6B that beats Omni-3B) runs <b>in transformers on CPU</b>: it <b>hears the name</b> → emits a
  <code>search_contacts</code> tool call → <code>tools.py</code> grounds it against the live directory
- (<b>__N__ contacts</b>) → then the model <b>speaks the reply back in the caller's own language</b>
- (zh-TW for Chinese callers, English for English). Conversation <i>and</i> tool use in one 0.6B model.
- Two model passes on CPU, <b>~10-20 s</b> total.</div>
+ (<b>__N__ contacts</b>) → composes the reply <b>in the caller's own language</b> (zh-TW for Chinese
+ callers, English for English) → and <b><a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> speaks it aloud</b>.
+ Speech-in, tool use, <i>and</i> speech-out — all from tiny on-device models. CPU only, <b>~10-20 s</b>.</div>
 <button id="rec" onclick="toggle()">🎙️ Start recording</button>
 <div class="status" id="status">Tip: “可以幫我接蔡孟儒嗎” or “I'd like to reach Coco Kuo”.</div>
 <div id="out" style="display:none">
  <div class="card"><h3>🔁 Tool-calling trace</h3>
   <div class="step">1 · 🎙️ you → 🤖 Qwen3-ASR-0.6B-Agent → tool call</div><pre id="tc"></pre>
   <div class="step">2 · 🔧 search_contacts → tool response</div><pre id="tr"></pre>
-  <div class="step">3 · 🗣️ model speaks back — <i>in the caller's own language</i></div><div id="decision" class="decision"></div><div id="say" class="say"></div></div>
+  <div class="step">3 · 🗣️ model speaks back — <i>in the caller's own language</i></div><div id="decision" class="decision"></div><div id="say" class="say"></div>
+  <audio id="player" controls style="width:100%;margin-top:10px;display:none"></audio>
+  <div class="step" id="ttslbl" style="display:none">🔊 voice by <a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> (4M-param zh-TW/en, on-device)</div></div>
  <div class="card"><h3>DB candidates (ranked)</h3>
   <table><thead><tr><th>#</th><th>name</th><th>中文名</th><th>dept</th><th>ext</th><th>score</th></tr></thead>
   <tbody id="cands"></tbody></table></div>
@@ -186,6 +310,9 @@ async function submit(){
  document.getElementById('tr').textContent=JSON.stringify(d.tool_response);
  const dc=document.getElementById('decision');dc.className='decision '+d.decision.kind;dc.innerHTML='<b>'+d.decision.title+'</b>';
  document.getElementById('say').textContent='“'+d.decision.say+'”';
+ const pl=document.getElementById('player'),tl=document.getElementById('ttslbl');
+ if(d.tts_audio){pl.src='data:audio/wav;base64,'+d.tts_audio;pl.style.display='block';tl.style.display='block';pl.play().catch(()=>{});}
+ else{pl.style.display='none';tl.style.display='none';}
  document.getElementById('cands').innerHTML=d.candidates.map(c=>'<tr class="'+(c.rank===1&&d.decision.kind!=='not_found'?'top':'')+'"><td>'+c.rank+'</td><td>'+c.name+'</td><td>'+c.zh+'</td><td>'+c.dept+'</td><td>'+c.ext+'</td><td>'+c.score+'</td></tr>').join('');}
 function rs(){const b=document.getElementById('rec');b.disabled=false;b.textContent='🎙️ Start recording';}
 </script></body></html>"""

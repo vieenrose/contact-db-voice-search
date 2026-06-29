@@ -22,3 +22,5 @@ runs/
 # scaling-challenge generated directories (regenerable via data/generate_directory_scaled.py, fixed seed)
 data/directory_2000.csv
 data/directory_20000.csv
+space-qwen3asr/G2PWModel/
+space-qwen3asr/**/__pycache__/

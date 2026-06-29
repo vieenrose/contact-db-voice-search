@@ -9,3 +9,11 @@ fastapi
 uvicorn
 python-multipart
 huggingface-hub
+librosa
+# PrimeTTS (Luigi/PrimeTTS) speech output: ONNX runtime + zh-TW/en frontend
+onnxruntime
+g2pw
+g2p_en
+cn2an
+inflect
+nltk==3.8.1

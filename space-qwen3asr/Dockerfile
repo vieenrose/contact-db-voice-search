@@ -1,9 +1,13 @@
 # Qwen3-ASR-0.6B-Agent voice attendant — transformers, CPU, in-process (no llama.cpp).
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg libsndfile1 libgomp1 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# PrimeTTS frontend: ship nltk corpora (g2p_en) in-image. (Do NOT set USE_TORCH=FALSE —
+# the Qwen3-ASR agent needs torch; g2p_en works fine alongside it.)
+ENV NLTK_DATA=/app/nltk_data
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
