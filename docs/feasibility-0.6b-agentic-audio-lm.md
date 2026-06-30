@@ -184,6 +184,15 @@ for the AuT encoder + Mimi decoder, and a **custom C++ streaming loop** for the 
 project — harder than training the model.** Grouped/low-frame-rate tokens (SLAM-Omni) and a turn-based
 (not full-duplex) interaction both cut the required passes/s and de-risk the loop.
 
+**Empirical anchor (2026-06-30, validates the model):** measured **Qwen3-0.6B Q8_0 = 44.6 tok/s** on an
+i5-8400 (4 threads, AVX2, dual-channel DDR4-2666 ≈42.7 GB/s) with `llama.cpp llama-bench`. That's **26.9
+GB/s effective = 63 % bandwidth utilization** — almost exactly the 60 % the budget assumed. Bandwidth-
+scaling to the Nano's 25.6 GB/s at the same 63 % util gives **~26.7 tok/s → RTF 0.47** (the table
+predicted 0.49). *Caveat:* the A57 CPU has far less compute than i5-AVX2, so a Nano **CPU-only** decode may
+be partly compute-bound (~12–20 tok/s); the Nano **GPU** path (Maxwell 472 GFLOPS over the same 25.6 GB/s
+unified memory) has the compute to stay bandwidth-bound and approach ~26. **So the budget is now
+empirically grounded, not just theoretical — INT8 real-time on Nano gen1 is the expected outcome.**
+
 **Decisive de-risking test (run first, like the Mimi gate):** flash a plain **0.6B GGUF** (e.g.
 Qwen3-0.6B) onto the actual Nano gen1 and measure **tok/s at Q8_0 and Q4_K_M**. One number validates or
 kills the real-time premise *before* any S2S training — if a bare 0.6B can't clear ~12.5 tok/s at INT8 on
