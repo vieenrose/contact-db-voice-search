@@ -53,7 +53,7 @@ frozen modules, as in Mini-Omni2):
 | Agentic text path | `<tool_call>` + resolver | — | ✅ **have it** — `Qwen3-ASR-0.6B-Agent` + `resolver.py` |
 | Audio **out head** | small **depth transformer** (Moshi) or **8 sub-LM heads** (Mini-Omni2) | ~tens of M | ❌ **new** |
 | Neural **codec** | **Mimi** (12.5 Hz, 8 codebooks, 1.1 kbps), frozen | ~tens of M, pretrained | ❌ **integrate** |
-| Audio teacher | **PrimeTTS v1b_16k** | ~5M | ✅ **have it** — becomes the audio-target generator (below) |
+| Audio **teacher** | **VoxCPM2** (OpenBMB, offline) | 2B, 48 kHz | ⚙️ **use it** — high-quality target generator (PrimeTTS's own teacher; see below). PrimeTTS stays as runtime fallback only. |
 
 **We already own 3 of 5** (encoder, agentic backbone, TTS teacher) **plus the data pipeline.** Mini-Omni2
 adds audio output to a *0.5B* backbone with just 8 extra heads and it works — so the capacity math
@@ -76,19 +76,31 @@ between layers). So the **audio renders the grounded text**; it cannot drift to 
 Keep `<tool_call>` and the reply **text** exactly as today (grounded by the resolver) and bolt audio
 on as a text-conditioned stream. **Agency and grounding are untouched; only the rendering changes.**
 
-## The data shortcut that makes this cheap: PrimeTTS as the audio teacher
+## The data shortcut that makes this cheap: VoxCPM2 as the audio teacher
 We do **not** need real speech-to-speech data. We already have **13.5k agentic dialogs with grounded
 reply text**. Recipe:
 
-1. Render every reply with **PrimeTTS v1b_16k** → reply audio (zh-TW/en, tone-correct, entity-correct).
-2. Encode that audio with **Mimi** → target codebook token streams.
+1. Render every reply with **VoxCPM2** (OpenBMB, 2B, tokenizer-free diffusion-AR, **48 kHz**, 30-lang,
+   Apache-2.0) using a **single fixed voice** (built-in, or a zero-shot clone of one reference) → clean,
+   expressive, code-mix-correct zh-TW/en reply audio. *(Not PrimeTTS — distillation quality is capped by
+   the teacher, and PrimeTTS is the lossy ~5M **student** of VoxCPM2; teaching the e2e model from the
+   student would bake the student's artifacts in. VoxCPM2 is PrimeTTS's own teacher, and our
+   `text_norm.py` was built so "VoxCPM2 audio matches" — the normalization already aligns.)*
+2. Downsample 48 kHz → 24 kHz and encode with **Mimi** (8 cb) → target codebook token streams.
 3. Warm-start from **`Qwen3-ASR-0.6B-Agent`**; train it to emit those Mimi tokens **in parallel with
    the (unchanged) reply text**, given `input audio → <tool_call> → <tool_response> → reply`.
 4. Mix in **ASR replay** (input audio → text) so perception/agency don't regress.
 
-This is **distilling PrimeTTS into the LM's audio output**, text-conditioned. Single-stage SFT — SLAM-Omni
+This is **distilling VoxCPM2 into the LM's audio output**, text-conditioned. Single-stage SFT — SLAM-Omni
 shows single-stage works at 0.5B in **~15 h on 4 GPUs from scratch**; warm-started from our agent it
-should be cheaper, and the LoRA that made the agent ran on a single GTX-1070.
+should be cheaper, and the LoRA that made the agent ran on a single GTX-1070. VoxCPM2 (2B, RTF ~0.3 on a
+4090) runs **offline** to manufacture targets — its size never touches the edge model.
+
+> **Honest ceiling note:** final e2e voice quality is bounded by **both** teacher *and* codec. Even a
+> 48 kHz broadcast-quality teacher is heard through **Mimi @ 1.1 kbps, 24 kHz** — so the teacher upgrade
+> buys cleaner *pronunciation / prosody / code-mix* in the targets (→ cleaner tokens, fewer errors), but
+> the codec sets the fidelity floor. If the rendered output is too thin, lift Mimi to **16 cb** (cheap on
+> the depth head) before reaching for a higher-rate codec.
 
 ## Recommended minimal architecture
 ```
@@ -102,8 +114,8 @@ should be cheaper, and the LoRA that made the agent ran on a single GTX-1070.
                                                   Mimi decoder (frozen) ─▶ speech out
 ```
 - **Text path = today's system** (agentic, grounded, deterministic extensions).
-- **Audio path = new**, text-conditioned, distilled from PrimeTTS. Optional: drop PrimeTTS at inference
-  once the LM's own audio is good, or keep it as a fallback.
+- **Audio path = new**, text-conditioned, distilled from **VoxCPM2**. The cascade's PrimeTTS stays
+  available as a lightweight runtime fallback, but it is **not** the teacher.
 
 ## Risks & mitigations (honest)
 1. **Capacity at 0.6B (main quality risk).** Open-domain 0.5B S2S is weak (VoiceBench ~33). *Mitigation:*
@@ -142,9 +154,10 @@ quality at 1.1 kbps proves too thin, 16 cb is cheap on the depth head.)
 ## Staged plan (crawl → walk → run)
 - **Stage 0 — done.** Cascade baseline (`Qwen3-ASR-0.6B-Agent` + resolver + PrimeTTS). The reference.
 - **Stage 1 — "the LM speaks" (the feasibility gate).** (a) ✅ **Mimi round-trip on zh-TW** validated
-  (F0-corr 0.994, see above) — *GO*. (b) Manufacture Mimi targets from PrimeTTS over the 13.5k dialogs.
-  (c) Warm-start the Agent, add the depth head, train text-conditioned audio-out. Success = LM-generated
-  reply audio ≈ PrimeTTS quality, extensions still correct. Single GPU.
+  (F0-corr 0.994, see above) — *GO*. (b) Render the 13.5k replies with **VoxCPM2** (fixed voice) →
+  downsample 48→24 kHz → Mimi-8cb encode → targets. (c) Warm-start the Agent, add the depth head, train
+  text-conditioned audio-out. Success = LM-generated reply audio ≈ VoxCPM2-through-Mimi quality,
+  extensions still correct. Single GPU (VoxCPM2 target-rendering runs offline on a 4090-class GPU).
 - **Stage 2 — streaming.** Emit audio while finishing text (Mini-Omni parallel/delay); measure
   first-audio latency; quantize (INT8 already proven on the decoder).
 - **Stage 3 — duplex (optional).** Dual user/system streams + barge-in (Moshi-style); train a zh/en-tuned
@@ -165,4 +178,5 @@ added complexity. So:
 - [SLAM-Omni (0.5B, single-stage)](https://arxiv.org/abs/2412.15649)
 - [Moshi + Mimi codec (depth transformer, 12.5 Hz, 8 codebooks)](https://kyutai.org/Moshi.pdf) · [kyutai/mimi](https://huggingface.co/kyutai/mimi)
 - [Qwen3-Omni — first S2S with function calling](https://github.com/QwenLM/Qwen3-Omni)
+- [VoxCPM2 (OpenBMB, 2B, 48 kHz, tokenizer-free) — the audio teacher](https://huggingface.co/openbmb/VoxCPM2)
 - Ours: [Qwen3-ASR-0.6B-Agent](https://huggingface.co/Luigi/Qwen3-ASR-0.6B-Agent) · [PrimeTTS](https://huggingface.co/Luigi/PrimeTTS) · [`lfm2audio-vs-cascade.md`](./lfm2audio-vs-cascade.md)
