@@ -102,6 +102,52 @@ should be cheaper, and the LoRA that made the agent ran on a single GTX-1070. Vo
 > the codec sets the fidelity floor. If the rendered output is too thin, lift Mimi to **16 cb** (cheap on
 > the depth head) before reaching for a higher-rate codec.
 
+## Can we *really* distill a pipeline into a native S2S model? (honest analysis)
+This is the load-bearing question, so be precise. "Native speech-to-speech" hides **three** different
+architectures with very different feasibility:
+
+| Class | What it is | Distillable from our pipeline? |
+|---|---|---|
+| **(a) Cascade** | separate ASR + LLM + TTS modules | already have it |
+| **(b) Unified interleaved** | **one network**, text+audio tokens interleaved, audio **conditioned on text** (Mini-Omni, LLaMA-Omni, arguably LFM2.5-Audio) | **YES — via SFT** |
+| **(c) Text-free native** | audio→audio with no text bottleneck; paralinguistics transfer end-to-end (Moshi, full-duplex) | **NO — needs large-scale audio pretraining** |
+
+**What we'd actually build is (b), and what we'd actually do is not classic KD but SFT of an
+audio-output modality.** Perception + agency are already native (audio→text tool-call/reply); we only
+*add* a speech-out head trained to emit Mimi tokens, with targets a TTS teacher (VoxCPM2) manufactures.
+
+**What distillation CAN transfer (and precedent proves at 0.5B):** the *mechanics* — single-network
+audio-out, streaming/early-emission, text-grounding, and our **narrow reply distribution** (a few hundred
+"為您轉接…分機…數字" patterns, one voice). Mini-Omni explicitly trains audio-out from **TTS-synthesized
+targets** with text-audio parallel decoding "at minimal resource overhead"; SLAM-Omni does single-stage
+at 0.5B. So **(b) is a solved, distillable architecture** — and a narrow, single-voice output
+distribution is *far* easier to fit than general TTS. For the attendant goal, this works.
+
+**What distillation CANNOT transfer (the honest limits):**
+1. **Context-aware paralinguistics — the "soul" of native S2S.** A single-voice TTS teacher's targets
+   contain **no** meaning-conditioned emotion/prosody, so the student can't learn it. You get a
+   *streaming built-in voice for your own text*, **not** expressive conversational speech. If
+   expressiveness is the actual goal, distilling canned TTS is the **wrong** path — that needs real
+   expressive speech or prosody-from-dialogue-context, i.e. class (c) with scale.
+2. **General audio robustness.** Native models (Moshi/LFM2.5/VoxCPM2) saw 1–2 M hours; an SFT'd 0.6B
+   sees only our synthetic targets — fine in-domain, brittle out-of-domain.
+3. **Hard ceilings:** final quality ≤ **teacher × Mimi@1.1 kbps × 0.6B capacity**. It will beat the old
+   8 kHz PrimeTTS and be a clean single-voice attendant; it will **not** be VoxCPM2-quality or general.
+
+**Distillation-specific failure risks to engineer around:**
+- **Stochastic-teacher mush.** VoxCPM2 is a sampling diffusion model — render the same text twice, get
+  different prosody. Distilling a *multi-modal* target into a small AR model averages → muddy audio.
+  *Mitigate:* fix the voice, low-temperature/seeded decoding, or pick the single cleanest render per text.
+- **Codec-token modeling at 0.6B** (the new hard part) — feasible (Mini-Omni2) but the quality bottleneck.
+- **Agency forgetting** — adding audio-out SFT can erode tool-calling; mix in agent/ASR replay.
+- **Text↔audio desync** — the parallel-decode delay pattern must be exact (solved in Mini-Omni).
+
+**Verdict on the question:** **Yes** for a *grounded attendant with a built-in streaming voice* (class
+(b), narrow domain, single voice) — distillation is sound and precedented. **No** for a *truly
+expressive, conversational, text-free native S2S* (class (c)) — you cannot SFT your way there from canned
+TTS; that requires real expressive speech at scale. **So decide which "good" you mean** before building:
+(b)-attendant is achievable now from what we have; (c)-conversationalist is a different, much larger project.
+
 ## Recommended minimal architecture
 ```
  user speech ─▶ AuT encoder (186M, frozen) ─▶ ┌─ Qwen3-0.6B backbone (warm-start: the Agent) ─┐
