@@ -66,15 +66,28 @@ Because the teacher's codec is **12.5 Hz** (backbone RTF unchanged) and its MTP/
   Code2Wav can decode a reduced stack with graceful quality loss. **Fallback:** Mimi (8 cb @ 12.5 Hz,
   already gated zh-tone F0-corr 0.994) if Code2Wav won't fit Nano — but then audio distill is sequence-level only.
 
-### 4. Audio **output head** — MTP depth transformer (warm-started), of three options
-| Option | Shape | Params | Nano cost | Quality |
-|---|---|---|---|---|
-| A. Sub-LM heads (Mini-Omni2) | N parallel heads off the backbone | ~few M | lowest | most backbone contention |
-| **B. MTP depth (Moshi/Qwen3-Omni)** ✅ | backbone hidden → **small 2–5 L d1024** → N codebooks | ~20–60M | low–moderate | **warm-startable from teacher's 5-L MTP** |
-| C. + small Talker | add 4–6 L audio transformer before MTP | +~70M | higher | best, offloads audio from backbone |
-**Decision: B**, initialized from the teacher's 5-L d1024 code predictor (dims match). Predicts the
-N codebooks/frame conditioned on the backbone hidden ⊕ the emitted **text** token (grounding). Escalate to
-**C** only if 0.6B/0.8B backbone audio quality is insufficient and INT4 affords the headroom.
+### 4. Audio **output head** — **shallow MTP** (Gate G1b resolved from the teacher's code)
+**The decisive measurement.** Qwen3-Omni's code confirms the MTP runs **autoregressively, one forward
+pass per residual code group** (`generation_steps 0..15`, RVQ codebook *i* needs 0…*i*−1 ⇒ inherently
+sequential): per frame = **1 backbone/Talker pass + (K−1) MTP passes**. The teacher's MTP is 5 L, d1024,
+ffn3072 (~52M core; ~115M with embeds+heads ≈ LFM2's RQ-transformer). Nano bandwidth cost (INT8,
+measured-anchored 16.1 GB/s effective; backbone 7.5 GB/s + Code2Wav ~1.0):
+
+| Head config | GB/s | **RTF** | |
+|---|---|---|---|
+| **Teacher's head: 5-L MTP, K=16** | 18.4 | **1.14** | ❌ not real-time (MTP > backbone!) |
+| 5-L MTP, K=8 | 13.1 | 0.82 | tight |
+| 3-L MTP, K=8 | 11.3 | 0.70 | tight |
+| **2-L MTP, K=8** ✅ | 10.4 | **0.64** | ✅ keeps some inter-codebook AR |
+| 2-L MTP, K=4 | 9.3 | 0.58 | ✅ |
+| **Parallel heads (no AR), any K** | 8.5 | **0.53** | ✅ fallback — cheapest, drops AR |
+
+**Decision (revised by the data): a shrunk head, NOT the teacher's full one.** Run a **2-layer MTP at
+K=8 codebooks, INT8 → RTF 0.64** — real-time, retains inter-codebook autoregression for quality. The
+**teacher's 5-L×16 head is a non-starter on Nano (RTF 1.14)**: we *distill from* it (and can init the 2
+student layers from the teacher's first layers) but cannot run it. **Fallback: parallel heads (RTF 0.53)**
+— collapse the (K−1) sequential passes into one, dropping AR, if 2-L MTP is still too tight or K=8
+parallel quality suffices. **K (codebook count) is the dominant lever; MTP depth is the second.**
 
 ### 5. **Vocoder** — reuse teacher Code2Wav (8-L conv, 24 kHz, left-context streaming)
 Frozen; "lightweight causal ConvNet" built for first-frame streaming. ~tens of M. PrimeTTS's HiFiGAN ran on
@@ -124,10 +137,10 @@ option for the Qwen3-Omni teacher. The earlier draft already had the head right;
 - **Backbone:** 12.5 passes/s (codec = 12.5 Hz, confirmed) ⇒ INT8 **RTF 0.47** (0.6B) / 0.62 (0.8B),
   empirically anchored (measured 0.6B Q8_0 = 44.6 tok/s on i5 ⇒ ~26.9 tok/s Nano). **Unchanged — the binding
   constraint is settled.**
-- **NEW variable — MTP head cost (Gate G1b):** 16 codebooks/frame via a 5-L d1024 head. Per-frame head passes
-  depend on the MTP's grouping (`num_code_groups 16`): if it emits all 16 in a few grouped steps (Moshi-style),
-  head load is small (~tens of M × a few × 12.5/s); if near-sequential, it grows. **Measure MTP forward-passes/
-  frame before committing 16 vs K=8 codebooks.** This — not the backbone — is the remaining Nano-cost unknown.
+- **MTP head cost (Gate G1b — RESOLVED, see §4):** the teacher's MTP is **autoregressive, K−1 sequential
+  passes/frame**. Full 5-L×16 head = **RTF 1.14 (not real-time)**; the chosen **2-L MTP @ K=8 = RTF 0.64**;
+  parallel-heads fallback = 0.53. The audio head is the *second* binding cost after the backbone — both must
+  be shrunk (shallow MTP + reduced K), and the head must be INT8 like the backbone (fp16 head ≈ 2× the GB/s).
 - **Vocoder:** Code2Wav once/frame → 1920 samples; benchmark on Maxwell (Gate).
 
 ## Quantization & runtime split (Nano)
@@ -151,8 +164,8 @@ MTP fine-tune; everything else is transfer.
 AuT (Qwen3-ASR, d896→1024, frozen, fp16)
   → Qwen3-0.6B backbone (d1024/28L, INT8, warm-start = Qwen3-ASR-0.6B-Agent)     ← lever: Qwen3.5-0.8B
      → text stream: <tool_call> + reply  (grounded; tool_call text-only)
-     → RQ/depth MTP head (≤5L d1024, fp16, warm-start = teacher code predictor; LFM2-style, field-best for CPU)
-        → teacher codec, K=8 of 16 codebooks @12.5Hz (lever: full 16 if Nano affords)
+     → 2L MTP head (d1024, INT8, distill-init from teacher's first MTP layers; RTF 0.64 @ K=8 — Gate G1b)
+        → teacher codec, K=8 of 16 codebooks @12.5Hz (NOT 16: full head = RTF 1.14; parallel-heads fallback RTF 0.53)
         → Code2Wav (8L conv, fp16, reuse) → 24 kHz speech
   text↔audio: VITA-Audio MCTP — ZERO-delay (audio in first forward pass); speech only on the reply.
 ```
@@ -160,11 +173,12 @@ AuT (Qwen3-ASR, d896→1024, frozen, fp16)
 target INT8 RTF ≈0.5 (backbone) + measured MTP/vocoder head (Gate G1b).
 
 ## Open gates (in priority order)
-1. **G1b — MTP forward-passes per frame** (16 vs K=8 codebooks): the remaining Nano-cost unknown; read from
-   the teacher's Talker/MTP code, then re-budget. Decides codebook count.
-2. **Code2Wav on Maxwell** — benchmark; else Mimi decoder fallback.
-3. **Capacity** — P1 text-KD eval decides 0.6B vs 0.8B backbone.
-4. **K-codebook intelligibility/tone** — does an 8-of-16 reduced stack keep zh tones? (reuse the Mimi-gate F0/CER method).
+1. ✅ **G1b — MTP passes/frame: RESOLVED.** Autoregressive, K−1 sequential passes. Full 5-L×16 = RTF 1.14
+   (no-go); **chosen 2-L MTP @ K=8 = RTF 0.64**; parallel-heads fallback 0.53. Head must be INT8 + shrunk.
+2. **K-codebook intelligibility/tone** — does an **8-of-16** reduced codebook stack keep zh tones + clarity?
+   (reuse the Mimi-gate F0/CER method on teacher audio decoded from K=8 vs 16.) **Now the top open gate.**
+3. **Code2Wav on Maxwell** — benchmark the 8-L conv vocoder; else Mimi decoder fallback.
+4. **Capacity** — P1 text-KD eval decides 0.6B vs 0.8B backbone.
 
 ## Sources
 - [Qwen3-Omni `config.json`](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct/blob/main/config.json) · [Qwen3-Omni Technical Report](https://arxiv.org/abs/2509.17765)
