@@ -10,7 +10,10 @@ open-domain quality of a 0.5–0.6B end-to-end speech model is well below a 1.5B
 (short, templated, closed-set replies: names + extensions) is far easier than open VoiceBench chat,
 which is exactly where a small model can still be good. The genuinely new engineering is **one module**
 (an audio-output head + neural codec) and **one training run**; three of the five components already
-exist in this repo. The two real risks are **edge sustained-latency** and **zh-TW codec/tone fidelity**.
+exist in this repo. Both original risks are now retired/quantified: **zh-TW codec/tone fidelity** PASSED
+(Mimi gate, F0-corr 0.994), and **Nano gen1 real-time** is **feasible only quantized** (INT8 RTF ≈0.5;
+FP16 fails) — leaving the **Jetson software stack + custom streaming inference loop** as the dominant
+remaining risk (see *Deployment target* below).
 
 ## Evidence: sub-1B end-to-end speech models already exist
 | Model | Size | What it proves |
@@ -147,6 +150,45 @@ distribution is *far* easier to fit than general TTS. For the attendant goal, th
 expressive, conversational, text-free native S2S* (class (c)) — you cannot SFT your way there from canned
 TTS; that requires real expressive speech at scale. **So decide which "good" you mean** before building:
 (b)-attendant is achievable now from what we have; (c)-conversationalist is a different, much larger project.
+
+## Deployment target: real-time 0.6B zh/en S2S on **Jetson Nano gen1** (the binding constraint)
+Goal restated: *a lightweight, real-time, zh/en speech-to-speech LM at 0.6B running on Jetson Nano
+gen1.* The Nano gen1 is the hardest target in the project, so it — not the model — sets feasibility.
+Platform: Maxwell GPU (sm_53, 128 cores, ~472 GFLOPS FP16), **4 GB shared LPDDR4 @ 25.6 GB/s**, quad
+Cortex-A57, CUDA 10.2.
+
+**Autoregressive decode is memory-bandwidth-bound** (each step streams all weights once), so the ceiling
+is `bandwidth ÷ bytes-per-token`, and the real-time bar is **≥12.5 backbone passes/s** (Mimi's 12.5 Hz
+frame rate; the 8 codebooks come from parallel heads / a tiny depth transformer in the same pass). Budget
+for a 0.6B backbone (realistic ≈0.6× of peak BW):
+
+| precision | GB/token | real tok/s | **RTF @ 12.5 Hz** | verdict |
+|---|---|---|---|---|
+| FP16 | 1.20 | ~12.8 | **0.98** | ❌ fails real-time (no margin for enc+codec+jitter) |
+| **INT8** | 0.60 | ~25.6 | **0.49** | ✅ real-time with ~2× headroom |
+| INT4 | 0.30 | ~51 | **0.24** | ✅ comfortable |
+
+**Memory** (≈2.5 GB usable after JetPack): INT8 backbone 0.6 + AuT enc 0.3 + Mimi 0.15 + KV 0.2 + act
+0.2 ≈ **1.45 GB — fits**. (Even FP16 fits in RAM at ~2.05 GB; it's *bandwidth*, not RAM, that kills FP16.)
+
+**Verdict: feasible — but only quantized.** INT8 is the target (RTF ≈0.5, headroom for the encoder, Mimi
+decode, and CPU-side streaming glue); INT4 buys margin at a quality cost; **FP16 cannot make real-time on
+Nano gen1.** This is consistent with why a 3B audio-LM is infeasible here (3 GB INT8 weights alone bust
+the RAM and need ~3× the bandwidth) while 0.6B closes.
+
+**The dominant risk is the software stack, not the compute.** CUDA 10.2 / TensorRT 8 / sm_53 is ancient;
+there is **no off-the-shelf runtime** for a streaming text+audio interleaved model with a Mimi depth head.
+Realistic path: GGUF + a Maxwell-compatible llama.cpp build for the backbone, ONNX-Runtime (old CUDA EP)
+for the AuT encoder + Mimi decoder, and a **custom C++ streaming loop** for the parallel text/audio decode
++ delay pattern + audio I/O. Expect the **Nano inference engine to be the hardest single piece of the
+project — harder than training the model.** Grouped/low-frame-rate tokens (SLAM-Omni) and a turn-based
+(not full-duplex) interaction both cut the required passes/s and de-risk the loop.
+
+**Decisive de-risking test (run first, like the Mimi gate):** flash a plain **0.6B GGUF** (e.g.
+Qwen3-0.6B) onto the actual Nano gen1 and measure **tok/s at Q8_0 and Q4_K_M**. One number validates or
+kills the real-time premise *before* any S2S training — if a bare 0.6B can't clear ~12.5 tok/s at INT8 on
+the real hardware, the whole e2e-on-Nano goal needs rescoping (smaller backbone, lower frame rate, or
+turn-based-with-latency).
 
 ## Recommended minimal architecture
 ```
