@@ -24,6 +24,23 @@ exist in this repo. The two real risks are **edge sustained-latency** and **zh-T
 Takeaway: **0.6B e2e S2S is a solved size class; agentic S2S is a solved pattern; nobody has combined
 them at 0.6B for zh/en — that's the open niche.**
 
+### Are there English-only counterparts? (prior-art map)
+Yes — and the small-S2S field is *almost entirely English*, yet even there the combination is missing.
+On three axes — **end-to-end audio × agentic (tool-calling) × small (≤~1B)**:
+
+| Corner filled | English models | Missing axis |
+|---|---|---|
+| e2e + small + English | Mini-Omni2 (0.5B), SLAM-Omni (0.5B), LLaMA-Omni2-0.5B, LFM2.5-Audio (1.5B), Moshi (7B), Sesame CSM (1B), Hertz-dev (8.5B) | **not agentic** (conversational only) |
+| agentic + small + English | TinyAgent-1.1B (Whisper→LLM→tools), MobileLLM-350M, Qwen3.5-0.8B | **cascade, not e2e audio** |
+| **e2e + agentic together** | **only Qwen3-Omni** | **large, and zh/en — not a small English-only model** |
+
+So **the English-only counterpart of "small + e2e + agentic S2S" does not fully exist either.** The
+English attempts fill *two of three corners* but never all three at once: the agentic ones are cascades
+(like ours today), the e2e-small ones are chatbots without tools. This *strengthens* the plan — every
+primitive is proven in English at 0.5B, we already hold the agentic half, and the unfilled combination
+is the same everywhere, so bilingual zh/en + agentic + 0.6B would be first-of-kind with **Qwen3-Omni**
+as the large-scale existence proof that e2e+agentic works.
+
 ## The five components, and the 0.6B budget
 An e2e audio LM = `audio encoder (in) → temporal LM backbone → audio-output head → neural codec (out)`,
 plus the agentic text path. Param budget at the "0.6B-backbone" class (encoder + codec are bolt-on
