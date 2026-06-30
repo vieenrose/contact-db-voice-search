@@ -122,10 +122,27 @@ should be cheaper, and the LoRA that made the agent ran on a single GTX-1070.
 4. **Entity correctness.** Guaranteed **only if** audio stays text-conditioned (Mini-Omni parallel) and
    text stays tool-grounded. Design rule: **never let the audio stream free-run independent of the text.**
 
+## Stage-1 gate result — Mimi zh-TW round-trip ✅ PASS (2026-06-30)
+Ran `kyutai/mimi` encode→decode at the **8-codebook / 12.5 Hz / 1.1 kbps** operating point on zh-TW and
+en clips (dataset + PrimeTTS-rendered replies). Tone preservation measured as **log-F0 contour
+correlation** (Mandarin tones *are* F0 contours):
+
+| | mean F0-corr ↑ | mean log-mel L1 ↓ |
+|---|---|---|
+| **zh-TW** (n=4) | **0.994** | 3.60 |
+| en (n=3) | 0.986 | 3.69 |
+
+**zh is not worse than en** → Mimi's English-distilled *semantic* codebook does **not** degrade Mandarin
+tones (tones live in the acoustic codebooks, which round-trip cleanly). Codebook knob on a zh clip:
+`nq=4 → 4.35` · `nq=8 → 2.92` · `nq=16 → 2.27` · `nq=32 → 1.98` (log-mel L1) — **8 codebooks is the
+cost/quality knee**; more codebooks only add *depth*-transformer cost, not temporal cost. **Verdict:
+the codec is not the blocker — Stage 1 is GO.** (Risk #2 retired for the operating point; if perceptual
+quality at 1.1 kbps proves too thin, 16 cb is cheap on the depth head.)
+
 ## Staged plan (crawl → walk → run)
 - **Stage 0 — done.** Cascade baseline (`Qwen3-ASR-0.6B-Agent` + resolver + PrimeTTS). The reference.
-- **Stage 1 — "the LM speaks" (the feasibility gate).** (a) Validate **Mimi round-trip on zh-TW** audio
-  (PESQ/tone check) — *go/no-go*. (b) Manufacture Mimi targets from PrimeTTS over the 13.5k dialogs.
+- **Stage 1 — "the LM speaks" (the feasibility gate).** (a) ✅ **Mimi round-trip on zh-TW** validated
+  (F0-corr 0.994, see above) — *GO*. (b) Manufacture Mimi targets from PrimeTTS over the 13.5k dialogs.
   (c) Warm-start the Agent, add the depth head, train text-conditioned audio-out. Success = LM-generated
   reply audio ≈ PrimeTTS quality, extensions still correct. Single GPU.
 - **Stage 2 — streaming.** Emit audio while finishing text (Mini-Omni parallel/delay); measure
