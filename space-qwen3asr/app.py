@@ -79,6 +79,7 @@ def to_wav(data: bytes, suffix: str) -> str:
 import re as _re
 
 TTS_REPO = os.environ.get("PRIMETTS_REPO", "Luigi/PrimeTTS")
+TTS_VARIANT = os.environ.get("PRIMETTS_VARIANT", "v1b_16k")   # flagship 16 kHz (clearest 0-8 kHz band)
 TTS = {}                                      # filled lazily / at startup
 _TTS_BN = ["frames", "frame_meta", "local_ctx_raw", "abs_pos", "pitch_frame", "frame_mask"]
 _TTS_SPLIT = _re.compile(r'(?<=[。！？；;!?\n,，、])')   # split AFTER punctuation, keep delimiter
@@ -109,7 +110,7 @@ def _load_tts():
     import onnxruntime as ort
     from huggingface_hub import hf_hub_download
     import frontend_bopomofo as F
-    w = lambda fn: hf_hub_download(TTS_REPO, fn)
+    w = lambda fn: hf_hub_download(TTS_REPO, f"{TTS_VARIANT}/{fn}")
     meta = json.load(open(w("meta.json")))
     nth = int(os.environ.get("TORCH_THREADS", "2"))
 
@@ -120,7 +121,7 @@ def _load_tts():
     F.text_to_ids("您好")                      # warm the frontend (pulls the g2pw model once)
     TTS.update(F=F, sr=meta["sample_rate"], abs_bins=meta["abs_frame_bins"], max_frames=meta["max_frames"],
                enc=_sess(w("acoustic_encoder.onnx")), dec=_sess(w("acoustic_decoder.onnx")), voc=_sess(w("vocoder.onnx")))
-    print("PrimeTTS ready", flush=True)
+    print(f"PrimeTTS ready ({TTS_VARIANT}, {meta['sample_rate']} Hz)", flush=True)
     return TTS
 
 
@@ -288,7 +289,7 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   <div class="step">2 · 🔧 search_contacts → tool response</div><pre id="tr"></pre>
   <div class="step">3 · 🗣️ model speaks back — <i>in the caller's own language</i></div><div id="decision" class="decision"></div><div id="say" class="say"></div>
   <audio id="player" controls style="width:100%;margin-top:10px;display:none"></audio>
-  <div class="step" id="ttslbl" style="display:none">🔊 voice by <a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> (4M-param zh-TW/en, on-device)</div></div>
+  <div class="step" id="ttslbl" style="display:none">🔊 voice by <a href="https://huggingface.co/Luigi/PrimeTTS" target="_blank">PrimeTTS</a> (~5M-param zh-TW/en flagship, 16 kHz, on-device)</div></div>
  <div class="card"><h3>DB candidates (ranked)</h3>
   <table><thead><tr><th>#</th><th>name</th><th>中文名</th><th>dept</th><th>ext</th><th>score</th></tr></thead>
   <tbody id="cands"></tbody></table></div>
