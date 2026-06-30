@@ -81,11 +81,44 @@ Frozen; "lightweight causal ConvNet" built for first-frame streaming. ~tens of M
 Nano at RTF 0.35, so an 8-L conv vocoder at 12.5 Hz is plausibly Nano-viable — **Gate: benchmark Code2Wav
 on Maxwell**; Mimi's conv decoder is the fallback.
 
-### 6. **Text↔audio interleave** — Mini-Omni delay pattern + phase split
-Backbone emits a text token per step; the MTP emits that step's 16 (or K) codebooks for the **delayed** text
-(1–2 frame delay) so audio renders already-decided, grounded text. **Phase split:** `<tool_call>` /
-`<tool_response>` are **text-only**; audio turns **on** only for the user-facing **reply** ⇒ agency stays
-pure-text/grounded, only the answer is spoken.
+### 6. **Text↔audio interleave** — **MCTP zero-delay** (VITA-Audio) + phase split
+*Upgraded from the Mini-Omni 1–2 frame delay after the best-arch survey below.* Use **VITA-Audio's MCTP**
+(Multiple Cross-modal Token Prediction): a lightweight module emits the audio codes **in the same forward
+pass** as the text token — **zero audio-token delay**, minimal first-audio latency (the priority on Nano).
+Audio is still **conditioned on the just-decided text token** (grounding preserved). **Phase split:**
+`<tool_call>` / `<tool_response>` are **text-only**; audio turns **on** only for the user-facing **reply**
+⇒ agency stays pure-text/grounded, only the answer is spoken.
+
+## Best-architecture survey (2026 landscape) — and why this design wins for *CPU-edge real-time*
+The output-head scheme is the decisive choice. Surveyed against the field:
+
+| Model | Audio-out head | First-audio latency | Edge/CPU real-time fit |
+|---|---|---|---|
+| Mini-Omni / Mini-Omni2 | parallel sub-LM heads + **delay pattern** | delayed | ok, but delay adds latency |
+| Moshi / Qwen3-Omni | **depth/MTP transformer** (8–16 cb) | 1-frame | strong (our teacher) |
+| **LFM2** | **RQ-transformer** (115M, 8 steps/frame) | **low TTFA** | **explicitly "real-time on commodity CPUs", beats delay patterns** |
+| Baichuan-Audio | 3-L depth transformer + 8 heads | low | strong |
+| **VITA-Audio** | **MCTP — audio in the *first* forward pass** | **zero-delay** | **best first-token latency** |
+| MiMo-Audio | independent per-RVQ heads | — | parallel, simple |
+| CosyVoice2 / GLM-4-Voice | single-codebook + flow-matching detokenizer | higher | heavier detokenizer, less edge |
+| TinyWave | (distilled 7B→2B S2S, block pruning) | — | precedent for *S2S distillation* |
+
+**Verdict — the best architecture for *this* student is convergent, not exotic:**
+1. **Head = small RQ/depth transformer** over the teacher codec — **LFM2 proves this is the real-time-on-CPU
+   winner** (115M head vs 1.2B backbone; chosen *over* delay patterns precisely for low TTFA on CPUs), and it's
+   what Moshi/Qwen3-Omni/Baichuan use. Warm-start it from the teacher's 5-L d1024 MTP. *(This is Option B — now
+   field-confirmed as best-for-edge, not just convenient.)*
+2. **Interleave = VITA-Audio MCTP (zero-delay)** — emit audio in the first forward pass; the lowest first-audio
+   latency available, which is exactly the Nano priority.
+3. **Codec = the teacher's** (white-box audio KD + graftable d1024 MTP + reusable Code2Wav) — no one else's
+   pairing gives all three transfer wins for *our specific teacher*.
+4. **Distillation = cross-modal KD** (T→T logit-KD on shared vocab + S→T/synthesized-speech alignment), the
+   recipe TinyWave/SPIRIT-LM and the cross-modal-KD papers validate for S2S-into-small.
+
+So the "best arch" is **single-backbone + RQ/depth head (LFM2-style) + MCTP zero-delay (VITA-Audio) + teacher
+codec + Code2Wav reuse** — each choice independently the edge/real-time optimum *and* the max-distillation-transfer
+option for the Qwen3-Omni teacher. The earlier draft already had the head right; the survey upgrades the
+*interleave* (delay → zero-delay MCTP) and confirms the head against the 2026 field.
 
 ## Nano real-time budget — refined with the real codec
 - **Backbone:** 12.5 passes/s (codec = 12.5 Hz, confirmed) ⇒ INT8 **RTF 0.47** (0.6B) / 0.62 (0.8B),
@@ -118,10 +151,10 @@ MTP fine-tune; everything else is transfer.
 AuT (Qwen3-ASR, d896→1024, frozen, fp16)
   → Qwen3-0.6B backbone (d1024/28L, INT8, warm-start = Qwen3-ASR-0.6B-Agent)     ← lever: Qwen3.5-0.8B
      → text stream: <tool_call> + reply  (grounded; tool_call text-only)
-     → MTP depth head (5L d1024, fp16, warm-start = teacher code predictor)
+     → RQ/depth MTP head (≤5L d1024, fp16, warm-start = teacher code predictor; LFM2-style, field-best for CPU)
         → teacher codec, K=8 of 16 codebooks @12.5Hz (lever: full 16 if Nano affords)
         → Code2Wav (8L conv, fp16, reuse) → 24 kHz speech
-  text↔audio: Mini-Omni delay; speech only on the reply.
+  text↔audio: VITA-Audio MCTP — ZERO-delay (audio in first forward pass); speech only on the reply.
 ```
 **Total trainable "brain" ≈ 0.6B backbone + ~40M MTP; ~0.85B incl. frozen AuT + Code2Wav.** Real-time
 target INT8 RTF ≈0.5 (backbone) + measured MTP/vocoder head (Gate G1b).
@@ -136,4 +169,5 @@ target INT8 RTF ≈0.5 (backbone) + measured MTP/vocoder head (Gate G1b).
 ## Sources
 - [Qwen3-Omni `config.json`](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct/blob/main/config.json) · [Qwen3-Omni Technical Report](https://arxiv.org/abs/2509.17765)
 - [Moshi/Mimi (depth transformer, 12.5 Hz)](https://kyutai.org/Moshi.pdf) · [Mini-Omni2 (0.5B, sub-LM heads)](https://arxiv.org/html/2410.11190v1) · [SLAM-Omni (grouped tokens, 0.5B)](https://arxiv.org/abs/2412.15649)
+- Best-arch survey: [VITA-Audio (MCTP, zero-delay)](https://arxiv.org/html/2505.03739) · [Kimi-Audio](https://arxiv.org/abs/2504.18425) · [LFM2 RQ-transformer head](https://arxiv.org/pdf/2511.23404) · [Baichuan-Audio](https://arxiv.org/pdf/2502.17239) · [TinyWave (S2S distillation)](https://arxiv.org/pdf/2506.23670)
 - Local: Qwen3-ASR-0.6B `config.json` · ours: [`distill-qwen3omni-to-0.6b-s2s.md`](./distill-qwen3omni-to-0.6b-s2s.md) · [`feasibility-0.6b-agentic-audio-lm.md`](./feasibility-0.6b-agentic-audio-lm.md)
