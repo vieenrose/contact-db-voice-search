@@ -57,14 +57,15 @@ head, codec, data) is backbone-agnostic and transfers, so start on 0.6B (free al
 headroom); **swap to 0.8B if P1 text-KD can't match the teacher or P2 audio contends with agency** (keep
 AuT, retrain only the projector; ship INT4 on Nano). If 0.8B, generation-match the teacher to Qwen3.5-Omni-Flash.
 
-### 3. Audio **output representation** — use the **teacher's codec** (16 cb @ 12.5 Hz), with a Nano lever
-Because the teacher's codec is **12.5 Hz** (backbone RTF unchanged) and its MTP/embeddings are **d=1024**:
-- **Adopt the teacher codec** ⇒ enables **token-level audio KD** (per-codebook KL vs the teacher), **warm-start
-  the MTP head** from the teacher's 5-L predictor, and **reuse Code2Wav** — three big distillation wins.
-- **Cost:** 16 codebooks/frame is **2× Mimi's 8** on the *head* (not the backbone). **Nano lever:** keep only
-  the **first K=8 of 16** codebooks (the semantic + coarse-acoustic, which carry most intelligibility/tone);
-  Code2Wav can decode a reduced stack with graceful quality loss. **Fallback:** Mimi (8 cb @ 12.5 Hz,
-  already gated zh-tone F0-corr 0.994) if Code2Wav won't fit Nano — but then audio distill is sequence-level only.
+### 3. Audio **output representation** — teacher codec (16 cb @ 12.5 Hz); **Code2Wav is fixed-16 (no K-truncation)**
+Teacher codec is **12.5 Hz** (backbone RTF unchanged) and its MTP/embeddings are **d=1024** ⇒ token-level
+audio KD + graftable head + reusable Code2Wav. **But the released `Code2Wav.forward` hard-requires all 16
+codebooks and *mean-pools* them** (`if codes.shape[1]!=16: raise`; `code_embedding(codes+offset).mean(1)`) —
+it is **not** a hierarchical RVQ you can truncate to K=8. So the earlier "K=8 lever" is **void for Code2Wav
+reuse**: to reuse Code2Wav you must emit **all 16** codebooks. Also: **no codec *encoder* is released**
+(only the AuT understanding-encoder + the Code2Wav decoder), so encoding real audio → teacher codes needs
+the 30B Talker ⇒ exact teacher-codec quality tests belong in **P0** (when the teacher is loaded to harvest).
+Consequence ⇒ see §4: the only Nano-real-time way to emit all 16 is **parallel heads**, not AR-MTP.
 
 ### 4. Audio **output head** — **shallow MTP** (Gate G1b resolved from the teacher's code)
 **The decisive measurement.** Qwen3-Omni's code confirms the MTP runs **autoregressively, one forward
@@ -82,12 +83,17 @@ measured-anchored 16.1 GB/s effective; backbone 7.5 GB/s + Code2Wav ~1.0):
 | 2-L MTP, K=4 | 9.3 | 0.58 | ✅ |
 | **Parallel heads (no AR), any K** | 8.5 | **0.53** | ✅ fallback — cheapest, drops AR |
 
-**Decision (revised by the data): a shrunk head, NOT the teacher's full one.** Run a **2-layer MTP at
-K=8 codebooks, INT8 → RTF 0.64** — real-time, retains inter-codebook autoregression for quality. The
-**teacher's 5-L×16 head is a non-starter on Nano (RTF 1.14)**: we *distill from* it (and can init the 2
-student layers from the teacher's first layers) but cannot run it. **Fallback: parallel heads (RTF 0.53)**
-— collapse the (K−1) sequential passes into one, dropping AR, if 2-L MTP is still too tight or K=8
-parallel quality suffices. **K (codebook count) is the dominant lever; MTP depth is the second.**
+**Decision (corrected after the Code2Wav finding): PARALLEL 16-heads → reuse Code2Wav.** Because Code2Wav
+needs **all 16** codebooks (no truncation), the choices collapse to:
+- **Autoregressive MTP, all 16:** RTF **1.14** — ❌ fails Nano (and K-truncation to fix it would require a
+  *retrained* Code2Wav-K, since the released one is fixed-16).
+- **Parallel heads, all 16 (no AR):** one cheap pass/frame predicting all 16 codebooks via 16 linear heads
+  off the backbone hidden → **RTF 0.53**, **reuses Code2Wav as-is**, Nano-real-time. ✅ **the pick.**
+The cost of parallel heads is dropping **inter-codebook autoregression** (each codebook predicted
+independently given the frame's text+hidden) — a known quality trade (MiMo-Audio/Mini-Omni2 use it). Whether
+that hurts zh tone/clarity is a **P0 test on the teacher codec** (parallel-vs-AR decode). **Fallback if
+parallel quality is insufficient or Code2Wav won't run on Maxwell:** **Mimi 8 cb** (hierarchical, truncatable,
+its own small decoder, already zh-tone-gated F0-corr 0.994) — at the cost of losing teacher-token-KD + Code2Wav.
 
 ### 5. **Vocoder** — reuse teacher Code2Wav (8-L conv, 24 kHz, left-context streaming)
 Frozen; "lightweight causal ConvNet" built for first-frame streaming. ~tens of M. PrimeTTS's HiFiGAN ran on
@@ -164,19 +170,22 @@ MTP fine-tune; everything else is transfer.
 AuT (Qwen3-ASR, d896→1024, frozen, fp16)
   → Qwen3-0.6B backbone (d1024/28L, INT8, warm-start = Qwen3-ASR-0.6B-Agent)     ← lever: Qwen3.5-0.8B
      → text stream: <tool_call> + reply  (grounded; tool_call text-only)
-     → 2L MTP head (d1024, INT8, distill-init from teacher's first MTP layers; RTF 0.64 @ K=8 — Gate G1b)
-        → teacher codec, K=8 of 16 codebooks @12.5Hz (NOT 16: full head = RTF 1.14; parallel-heads fallback RTF 0.53)
-        → Code2Wav (8L conv, fp16, reuse) → 24 kHz speech
+     → PARALLEL 16-heads (one pass/frame, INT8; RTF 0.53 — Code2Wav needs all 16, AR-MTP would be RTF 1.14)
+        → teacher codec, all 16 codebooks @12.5Hz
+        → Code2Wav (8L conv, fp16, reuse as-is) → 24 kHz speech
   text↔audio: VITA-Audio MCTP — ZERO-delay (audio in first forward pass); speech only on the reply.
+  fallback codec: Mimi 8cb (hierarchical, own decoder, zh-tone-gated) if parallel-quality/Code2Wav-on-Maxwell fail.
 ```
 **Total trainable "brain" ≈ 0.6B backbone + ~40M MTP; ~0.85B incl. frozen AuT + Code2Wav.** Real-time
 target INT8 RTF ≈0.5 (backbone) + measured MTP/vocoder head (Gate G1b).
 
 ## Open gates (in priority order)
-1. ✅ **G1b — MTP passes/frame: RESOLVED.** Autoregressive, K−1 sequential passes. Full 5-L×16 = RTF 1.14
-   (no-go); **chosen 2-L MTP @ K=8 = RTF 0.64**; parallel-heads fallback 0.53. Head must be INT8 + shrunk.
-2. **K-codebook intelligibility/tone** — does an **8-of-16** reduced codebook stack keep zh tones + clarity?
-   (reuse the Mimi-gate F0/CER method on teacher audio decoded from K=8 vs 16.) **Now the top open gate.**
+1. ✅ **G1b — MTP passes/frame & head design: RESOLVED from the code.** AR-MTP = K−1 sequential passes ⇒
+   all-16 = RTF 1.14 (no-go); and Code2Wav is **fixed-16 mean-pool** (no K-truncation) ⇒ **parallel 16-heads
+   → Code2Wav, RTF 0.53** is the pick. Head INT8.
+2. **Parallel-vs-AR audio quality (P0 test)** — does dropping inter-codebook AR (parallel 16-heads) keep zh
+   tone/clarity? Needs the teacher codec (no encoder released) ⇒ test during P0 harvest: decode teacher codes
+   parallel-style vs AR, F0-corr + CER. **Top open gate.** Mimi-8 fallback already F0-gated.
 3. **Code2Wav on Maxwell** — benchmark the 8-L conv vocoder; else Mimi decoder fallback.
 4. **Capacity** — P1 text-KD eval decides 0.6B vs 0.8B backbone.
 
